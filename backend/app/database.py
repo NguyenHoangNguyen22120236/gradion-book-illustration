@@ -54,6 +54,22 @@ CREATE TABLE IF NOT EXISTS characters (
 
 CREATE INDEX IF NOT EXISTS characters_project_idx
 ON characters(project_id, sort_order);
+
+CREATE TABLE IF NOT EXISTS chapters (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    prompt TEXT NOT NULL,
+    sort_order INTEGER NOT NULL CHECK (sort_order = 0),
+    illustration_path TEXT,
+    image_state TEXT NOT NULL DEFAULT 'PENDING'
+        CHECK (image_state IN ('PENDING', 'GENERATING', 'READY', 'FAILED')),
+    image_error TEXT,
+    UNIQUE(project_id, sort_order)
+);
+
+CREATE INDEX IF NOT EXISTS chapters_project_idx
+ON chapters(project_id, sort_order);
 """
 
 

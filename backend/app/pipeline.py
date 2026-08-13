@@ -125,6 +125,22 @@ def character_dict(row: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def chapter_dict(row: Mapping[str, Any]) -> dict[str, Any]:
+    illustration_url = None
+    if row["image_state"] == "READY" and row["illustration_path"]:
+        illustration_url = (
+            f"/api/projects/{row['project_id']}/chapters/{row['id']}/illustration"
+        )
+    return {
+        "id": row["id"],
+        "name": row["name"],
+        "prompt": row["prompt"],
+        "image_state": row["image_state"],
+        "image_error": row["image_error"],
+        "illustration_url": illustration_url,
+    }
+
+
 class PipelineStateMachine:
     def __init__(
         self, database: Database, executor: PipelineExecutor, process_instance_id: str
@@ -258,6 +274,44 @@ class PipelineStateMachine:
                         self.process_instance_id,
                     ),
                 )
+            elif requested_step == PipelineStep.CHAPTERS:
+                chapters = result.get("chapters")
+                if chapters is not None:
+                    connection.execute(
+                        "DELETE FROM chapters WHERE project_id = ?", (project_id,)
+                    )
+                    for sort_order, chapter in enumerate(chapters[:1]):
+                        connection.execute(
+                            """INSERT INTO chapters
+                               (id, project_id, name, prompt, sort_order)
+                               VALUES (?, ?, ?, ?, ?)""",
+                            (
+                                str(uuid4()),
+                                project_id,
+                                chapter["name"],
+                                chapter["prompt"],
+                                sort_order,
+                            ),
+                        )
+                connection.execute(
+                    """UPDATE projects
+                       SET completed_stage = ?, step_state = 'IDLE', active_step = NULL,
+                           step_started_at = NULL, step_error = NULL,
+                           execution_owner = NULL,
+                           latest_interaction_id = COALESCE(?, latest_interaction_id),
+                           updated_at = ?
+                       WHERE id = ? AND user_id = ? AND step_state = 'RUNNING'
+                         AND active_step = ? AND execution_owner = ?""",
+                    (
+                        COMPLETED_BY_STEP[requested_step].value,
+                        interaction_id,
+                        completed_at,
+                        project_id,
+                        user_id,
+                        requested_step.value,
+                        self.process_instance_id,
+                    ),
+                )
             else:
                 connection.execute(
                     """UPDATE projects
@@ -302,6 +356,13 @@ class PipelineStateMachine:
                     """UPDATE characters
                        SET image_state = 'FAILED',
                            image_error = 'Portrait generation was interrupted by a backend restart'
+                       WHERE project_id = ? AND image_state = 'GENERATING'""",
+                    (project_id,),
+                )
+                connection.execute(
+                    """UPDATE chapters
+                       SET image_state = 'FAILED',
+                           image_error = 'Illustration generation was interrupted by a backend restart'
                        WHERE project_id = ? AND image_state = 'GENERATING'""",
                     (project_id,),
                 )
@@ -353,7 +414,15 @@ class PipelineStateMachine:
                    WHERE project_id = ? ORDER BY sort_order""",
                 (project_id,),
             ).fetchall()
+            chapters = connection.execute(
+                """SELECT id, project_id, name, prompt, illustration_path,
+                          image_state, image_error
+                   FROM chapters
+                   WHERE project_id = ? ORDER BY sort_order""",
+                (project_id,),
+            ).fetchall()
         project["characters"] = [character_dict(character) for character in characters]
+        project["chapters"] = [chapter_dict(chapter) for chapter in chapters]
         return project
 
     def _get_project_row(

@@ -23,6 +23,13 @@ a detailed standalone image-generation prompt consistent with the established st
 is_adult=true. The prompt must describe stable visual identity, clothing, physical features,
 and suitable portrait composition without referring to unavailable text."""
 
+CHAPTER_INSTRUCTION = """Using the uploaded book, established art style, and adult
+characters already identified in this conversation, select one chapter scene to illustrate.
+Return at most one chapter. Provide its chapter or scene name and a detailed standalone
+image-generation prompt. The prompt must describe the setting, action, composition,
+lighting, and mood, and explicitly name the relevant established characters so their saved
+portraits can be used as visual references. Do not refer to unavailable text or context."""
+
 CHARACTERS_SCHEMA = {
     "type": "object",
     "properties": {
@@ -48,6 +55,32 @@ CHARACTERS_SCHEMA = {
         }
     },
     "required": ["characters"],
+    "additionalProperties": False,
+}
+
+CHAPTERS_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "chapters": {
+            "type": "array",
+            "maxItems": 1,
+            "items": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "Chapter or scene name"},
+                    "image_prompt": {
+                        "type": "string",
+                        "description": (
+                            "Detailed scene prompt naming relevant established characters"
+                        ),
+                    },
+                },
+                "required": ["name", "image_prompt"],
+                "additionalProperties": False,
+            },
+        }
+    },
+    "required": ["chapters"],
     "additionalProperties": False,
 }
 
@@ -106,6 +139,14 @@ class GeminiClient(Protocol):
     ) -> GeminiInteraction: ...
 
     def generate_portrait(self, prompt: str) -> GeneratedImage: ...
+
+    def create_chapters_interaction(
+        self, previous_interaction_id: str
+    ) -> GeminiInteraction: ...
+
+    def generate_illustration(
+        self, prompt: str, portrait_references: list[GeneratedImage]
+    ) -> GeneratedImage: ...
 
 
 class GoogleGenAIClient:
@@ -191,19 +232,54 @@ class GoogleGenAIClient:
             model=self._image_model,
             input=prompt,
         )
+        return self._generated_image(interaction, "portrait")
+
+    def create_chapters_interaction(
+        self, previous_interaction_id: str
+    ) -> GeminiInteraction:
+        return self._client.interactions.create(
+            model=self._text_model,
+            previous_interaction_id=previous_interaction_id,
+            input=CHAPTER_INSTRUCTION,
+            response_format={
+                "type": "text",
+                "mime_type": "application/json",
+                "schema": CHAPTERS_SCHEMA,
+            },
+        )
+
+    def generate_illustration(
+        self, prompt: str, portrait_references: list[GeneratedImage]
+    ) -> GeneratedImage:
+        image_inputs = [
+            {
+                "type": "image",
+                "data": base64.b64encode(reference.data).decode("ascii"),
+                "mime_type": reference.mime_type,
+            }
+            for reference in portrait_references
+        ]
+        interaction = self._client.interactions.create(
+            model=self._image_model,
+            input=[{"type": "text", "text": prompt}, *image_inputs],
+        )
+        return self._generated_image(interaction, "illustration")
+
+    @staticmethod
+    def _generated_image(interaction: Any, label: str) -> GeneratedImage:
         output_image = getattr(interaction, "output_image", None)
         encoded_data = getattr(output_image, "data", None)
         mime_type = getattr(output_image, "mime_type", None)
         if not isinstance(encoded_data, (str, bytes)) or not encoded_data:
-            raise RuntimeError("Gemini returned no portrait image data")
+            raise RuntimeError(f"Gemini returned no {label} image data")
         if not isinstance(mime_type, str) or not mime_type.strip():
-            raise RuntimeError("Gemini returned no portrait image type")
+            raise RuntimeError(f"Gemini returned no {label} image type")
         try:
             image_data = base64.b64decode(encoded_data, validate=True)
         except (ValueError, TypeError) as error:
-            raise RuntimeError("Gemini returned invalid portrait image data") from error
+            raise RuntimeError(f"Gemini returned invalid {label} image data") from error
         if not image_data:
-            raise RuntimeError("Gemini returned empty portrait image data")
+            raise RuntimeError(f"Gemini returned empty {label} image data")
         return GeneratedImage(data=image_data, mime_type=mime_type.strip().lower())
 
 
@@ -229,8 +305,29 @@ class CharacterResponse(BaseModel):
     characters: list[CharacterCandidate] = Field(min_length=1)
 
 
+class ChapterCandidate(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    name: str
+    image_prompt: str
+
+    @field_validator("name", "image_prompt")
+    @classmethod
+    def require_text(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("must not be blank")
+        return value
+
+
+class ChapterResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    chapters: list[ChapterCandidate] = Field(min_length=1)
+
+
 class GeminiPipelineExecutor:
-    """Real executor for text steps through Characters and portrait generation."""
+    """Real executor for the five-step book illustration pipeline."""
 
     def __init__(
         self, client: GeminiClient, database: Database, data_dir: Path
@@ -244,6 +341,8 @@ class GeminiPipelineExecutor:
             PipelineStep.STYLE,
             PipelineStep.CHARACTERS,
             PipelineStep.PORTRAITS,
+            PipelineStep.CHAPTERS,
+            PipelineStep.ILLUSTRATIONS,
         ):
             return {}
         try:
@@ -251,7 +350,11 @@ class GeminiPipelineExecutor:
                 return self._execute_style(project)
             if step == PipelineStep.CHARACTERS:
                 return self._execute_characters(project)
-            return self._execute_portraits(project)
+            if step == PipelineStep.PORTRAITS:
+                return self._execute_portraits(project)
+            if step == PipelineStep.CHAPTERS:
+                return self._execute_chapters(project)
+            return self._execute_illustrations(project)
         except PipelineExecutionError:
             raise
         except Exception as error:
@@ -354,6 +457,90 @@ class GeminiPipelineExecutor:
                 raise PipelineExecutionError(message) from error
         return {}
 
+    def _execute_chapters(self, project: dict[str, Any]) -> dict[str, Any]:
+        previous_id = project.get("latest_interaction_id")
+        if not isinstance(previous_id, str) or not previous_id.strip():
+            raise PipelineExecutionError(
+                "Chapters require the completed Characters interaction"
+            )
+        interaction = self.client.create_chapters_interaction(previous_id)
+        interaction_id = self._require_interaction_id(interaction)
+        output = self._require_output_text(interaction, "chapters")
+        try:
+            parsed = ChapterResponse.model_validate_json(output)
+        except (ValidationError, ValueError, json.JSONDecodeError) as error:
+            raise PipelineExecutionError(
+                "Gemini returned invalid structured chapter output"
+            ) from error
+
+        chapter = parsed.chapters[0]
+        return {
+            "latest_interaction_id": interaction_id,
+            "chapters": [{"name": chapter.name, "prompt": chapter.image_prompt}],
+        }
+
+    def _execute_illustrations(self, project: dict[str, Any]) -> dict[str, Any]:
+        with self.database.connect() as connection:
+            chapter = connection.execute(
+                """SELECT id, name, prompt FROM chapters
+                   WHERE project_id = ? ORDER BY sort_order LIMIT 1""",
+                (project["id"],),
+            ).fetchone()
+            characters = connection.execute(
+                """SELECT name, portrait_path, image_state FROM characters
+                   WHERE project_id = ? ORDER BY sort_order""",
+                (project["id"],),
+            ).fetchall()
+        if chapter is None:
+            raise PipelineExecutionError("Illustrations require a persisted chapter")
+        if not characters:
+            raise PipelineExecutionError("Illustrations require persisted characters")
+
+        references: list[GeneratedImage] = []
+        for character in characters:
+            if character["image_state"] != "READY" or not character["portrait_path"]:
+                raise PipelineExecutionError(
+                    "Illustrations require all character portraits"
+                )
+            portrait_path = self._resolve_data_path(character["portrait_path"])
+            if not portrait_path.is_file():
+                raise PipelineExecutionError(
+                    f"Stored portrait is missing for {character['name']}"
+                )
+            references.append(
+                GeneratedImage(
+                    data=portrait_path.read_bytes(),
+                    mime_type=self._image_mime_type(portrait_path),
+                )
+            )
+
+        self._mark_illustration_generating(chapter["id"])
+        try:
+            prompt = self._illustration_prompt(
+                chapter["prompt"], project.get("style")
+            )
+            image = self.client.generate_illustration(prompt, references)
+            relative_path = self._save_illustration(
+                project["id"], chapter["id"], image
+            )
+            with self.database.connect() as connection:
+                connection.execute(
+                    """UPDATE chapters
+                       SET illustration_path = ?, image_state = 'READY', image_error = NULL
+                       WHERE id = ? AND project_id = ?""",
+                    (relative_path, chapter["id"], project["id"]),
+                )
+        except Exception as error:
+            message = f"Illustration generation failed for {chapter['name']}"
+            with self.database.connect() as connection:
+                connection.execute(
+                    """UPDATE chapters SET image_state = 'FAILED', image_error = ?
+                       WHERE id = ? AND project_id = ?""",
+                    (message, chapter["id"], project["id"]),
+                )
+            raise PipelineExecutionError(message) from error
+        return {}
+
     def _portrait_is_available(self, character: Any) -> bool:
         portrait_path = character["portrait_path"]
         if character["image_state"] != "READY" or not portrait_path:
@@ -403,6 +590,41 @@ class GeminiPipelineExecutor:
             temporary.unlink(missing_ok=True)
         return relative_path.as_posix()
 
+    def _mark_illustration_generating(self, chapter_id: str) -> None:
+        with self.database.connect() as connection:
+            connection.execute(
+                """UPDATE chapters
+                   SET image_state = 'GENERATING', image_error = NULL
+                   WHERE id = ?""",
+                (chapter_id,),
+            )
+
+    def _save_illustration(
+        self, project_id: str, chapter_id: str, image: GeneratedImage
+    ) -> str:
+        extensions = {
+            "image/png": ".png",
+            "image/jpeg": ".jpg",
+            "image/webp": ".webp",
+        }
+        extension = extensions.get(image.mime_type.lower())
+        if extension is None:
+            raise ValueError("Gemini returned an unsupported illustration image type")
+        if not image.data:
+            raise ValueError("Gemini returned empty illustration image data")
+        relative_path = (
+            Path("images") / project_id / "chapters" / f"{chapter_id}{extension}"
+        )
+        target = self._resolve_data_path(relative_path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        temporary = target.with_suffix(f"{target.suffix}.tmp")
+        try:
+            temporary.write_bytes(image.data)
+            temporary.replace(target)
+        finally:
+            temporary.unlink(missing_ok=True)
+        return relative_path.as_posix()
+
     def _resolve_data_path(self, relative_path: str | Path) -> Path:
         root = self.data_dir.resolve()
         resolved = (root / relative_path).resolve()
@@ -413,6 +635,19 @@ class GeminiPipelineExecutor:
         return resolved
 
     @staticmethod
+    def _image_mime_type(path: Path) -> str:
+        media_types = {
+            ".png": "image/png",
+            ".jpg": "image/jpeg",
+            ".jpeg": "image/jpeg",
+            ".webp": "image/webp",
+        }
+        mime_type = media_types.get(path.suffix.lower())
+        if mime_type is None:
+            raise ValueError("Stored image has an unsupported type")
+        return mime_type
+
+    @staticmethod
     def _portrait_prompt(character_prompt: str, style: Any) -> str:
         established_style = style if isinstance(style, str) and style.strip() else ""
         return (
@@ -420,6 +655,17 @@ class GeminiPipelineExecutor:
             "labels, borders, or additional characters.\n"
             f"Established art style: {established_style}\n"
             f"Character portrait prompt: {character_prompt}"
+        )
+
+    @staticmethod
+    def _illustration_prompt(chapter_prompt: str, style: Any) -> str:
+        established_style = style if isinstance(style, str) and style.strip() else ""
+        return (
+            "Generate exactly one chapter scene illustration using the supplied character "
+            "portraits as visual identity references. Preserve their recognizable features, "
+            "clothing, and proportions. Do not add captions, labels, or borders.\n"
+            f"Established art style: {established_style}\n"
+            f"Persisted chapter illustration prompt: {chapter_prompt}"
         )
 
     @staticmethod

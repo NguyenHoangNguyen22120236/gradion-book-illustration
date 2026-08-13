@@ -27,6 +27,7 @@ from .pipeline import (
     ProjectNotFound,
     StepExecutionFailed,
     can_recover_execution,
+    chapter_dict,
     character_dict,
 )
 
@@ -108,6 +109,7 @@ def project_dict(
     process_instance_id: str,
     book_text: str | None = None,
     characters: list[dict] | None = None,
+    chapters: list[dict] | None = None,
 ) -> dict:
     result = {
         key: row[key]
@@ -126,6 +128,7 @@ def project_dict(
     }
     result["can_recover"] = can_recover_execution(row, process_instance_id)
     result["characters"] = characters or []
+    result["chapters"] = chapters or []
     if book_text is not None:
         result["book_text"] = book_text
     return result
@@ -242,6 +245,17 @@ def create_app(
             ).fetchall()
         return [character_dict(row) for row in rows]
 
+    def read_chapters(project_id: str) -> list[dict]:
+        with database.connect() as connection:
+            rows = connection.execute(
+                """SELECT id, project_id, name, prompt, illustration_path,
+                          image_state, image_error
+                   FROM chapters
+                   WHERE project_id = ? ORDER BY sort_order""",
+                (project_id,),
+            ).fetchall()
+        return [chapter_dict(row) for row in rows]
+
     @application.post("/api/projects", status_code=status.HTTP_201_CREATED)
     def create_project(
         payload: ProjectRequest,
@@ -284,7 +298,12 @@ def create_app(
                 (user["id"],),
             ).fetchall()
         return [
-            project_dict(row, backend_process_id, characters=read_characters(row["id"]))
+            project_dict(
+                row,
+                backend_process_id,
+                characters=read_characters(row["id"]),
+                chapters=read_chapters(row["id"]),
+            )
             for row in rows
         ]
 
@@ -305,7 +324,30 @@ def create_app(
             backend_process_id,
             read_book(row),
             read_characters(project_id),
+            read_chapters(project_id),
         )
+
+    def stored_image_response(relative_path: str | None, label: str) -> FileResponse:
+        if not relative_path:
+            raise HTTPException(status_code=404, detail=f"{label} not found")
+        data_root = resolved_data.resolve()
+        image_path = (data_root / relative_path).resolve()
+        try:
+            image_path.relative_to(data_root)
+        except ValueError as error:
+            raise HTTPException(status_code=404, detail=f"{label} not found") from error
+        if not image_path.is_file():
+            raise HTTPException(status_code=404, detail=f"{label} not found")
+        media_types = {
+            ".png": "image/png",
+            ".jpg": "image/jpeg",
+            ".jpeg": "image/jpeg",
+            ".webp": "image/webp",
+        }
+        media_type = media_types.get(image_path.suffix.lower())
+        if media_type is None:
+            raise HTTPException(status_code=404, detail=f"{label} not found")
+        return FileResponse(image_path, media_type=media_type)
 
     @application.get(
         "/api/projects/{project_id}/characters/{character_id}/portrait",
@@ -327,25 +369,29 @@ def create_app(
             ).fetchone()
         if row is None or not row["portrait_path"]:
             raise HTTPException(status_code=404, detail="Portrait not found")
+        return stored_image_response(row["portrait_path"], "Portrait")
 
-        data_root = resolved_data.resolve()
-        portrait_path = (data_root / row["portrait_path"]).resolve()
-        try:
-            portrait_path.relative_to(data_root)
-        except ValueError as error:
-            raise HTTPException(status_code=404, detail="Portrait not found") from error
-        if not portrait_path.is_file():
-            raise HTTPException(status_code=404, detail="Portrait not found")
-        media_types = {
-            ".png": "image/png",
-            ".jpg": "image/jpeg",
-            ".jpeg": "image/jpeg",
-            ".webp": "image/webp",
-        }
-        media_type = media_types.get(portrait_path.suffix.lower())
-        if media_type is None:
-            raise HTTPException(status_code=404, detail="Portrait not found")
-        return FileResponse(portrait_path, media_type=media_type)
+    @application.get(
+        "/api/projects/{project_id}/chapters/{chapter_id}/illustration",
+        response_model=None,
+    )
+    def get_chapter_illustration(
+        project_id: str,
+        chapter_id: str,
+        user: Annotated[sqlite3.Row, Depends(current_user)],
+    ) -> FileResponse:
+        with database.connect() as connection:
+            row = connection.execute(
+                """SELECT chapters.illustration_path
+                   FROM chapters
+                   JOIN projects ON projects.id = chapters.project_id
+                   WHERE chapters.id = ? AND chapters.project_id = ?
+                     AND projects.user_id = ? AND chapters.image_state = 'READY'""",
+                (chapter_id, project_id, user["id"]),
+            ).fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="Illustration not found")
+        return stored_image_response(row["illustration_path"], "Illustration")
 
     @application.post(
         "/api/projects/{project_id}/steps/{step}", response_model=None
