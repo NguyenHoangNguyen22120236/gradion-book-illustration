@@ -20,6 +20,7 @@ from .pipeline import (
     PipelineStep,
     ProjectNotFound,
     StepExecutionFailed,
+    can_recover_execution,
 )
 
 
@@ -83,7 +84,11 @@ def user_dict(row: sqlite3.Row) -> dict[str, str]:
     return {key: row[key] for key in ("id", "name", "email", "created_at")}
 
 
-def project_dict(row: sqlite3.Row, book_text: str | None = None) -> dict:
+def project_dict(
+    row: sqlite3.Row,
+    process_instance_id: str,
+    book_text: str | None = None,
+) -> dict:
     result = {
         key: row[key]
         for key in (
@@ -99,6 +104,7 @@ def project_dict(row: sqlite3.Row, book_text: str | None = None) -> dict:
             "style",
         )
     }
+    result["can_recover"] = can_recover_execution(row, process_instance_id)
     if book_text is not None:
         result["book_text"] = book_text
     return result
@@ -108,12 +114,14 @@ def create_app(
     database_path: Path | str | None = None,
     data_dir: Path | str | None = None,
     pipeline_executor: PipelineExecutor | None = None,
+    process_instance_id: str | None = None,
 ) -> FastAPI:
     root = Path(__file__).resolve().parents[2]
     resolved_data = Path(data_dir) if data_dir else root / "data"
     database = Database(Path(database_path) if database_path else resolved_data / "app.db")
+    backend_process_id = process_instance_id or str(uuid4())
     state_machine = PipelineStateMachine(
-        database, pipeline_executor or FakePipelineExecutor()
+        database, pipeline_executor or FakePipelineExecutor(), backend_process_id
     )
 
     @asynccontextmanager
@@ -127,6 +135,7 @@ def create_app(
     application = FastAPI(title="Gradion Book Illustration API", lifespan=lifespan)
     application.state.database = database
     application.state.data_dir = resolved_data
+    application.state.process_instance_id = backend_process_id
 
     def current_user(authorization: Annotated[str | None, Header()] = None) -> sqlite3.Row:
         if not authorization or not authorization.startswith("Bearer "):
@@ -217,7 +226,7 @@ def create_app(
                 ).fetchone()
         except OSError as error:
             raise HTTPException(status_code=500, detail="Could not save book text") from error
-        return project_dict(row, payload.book_text)
+        return project_dict(row, backend_process_id, payload.book_text)
 
     @application.get("/api/projects")
     def list_projects(
@@ -228,7 +237,7 @@ def create_app(
                 "SELECT * FROM projects WHERE user_id = ? ORDER BY created_at DESC",
                 (user["id"],),
             ).fetchall()
-        return [project_dict(row) for row in rows]
+        return [project_dict(row, backend_process_id) for row in rows]
 
     @application.get("/api/projects/{project_id}")
     def get_project(
@@ -242,7 +251,7 @@ def create_app(
             ).fetchone()
         if row is None:
             raise HTTPException(status_code=404, detail="Project not found")
-        return project_dict(row, read_book(row))
+        return project_dict(row, backend_process_id, read_book(row))
 
     @application.post(
         "/api/projects/{project_id}/steps/{step}", response_model=None
@@ -267,6 +276,18 @@ def create_app(
                 status_code=502,
                 content={"detail": str(error), "project": error.project},
             )
+
+    @application.post("/api/projects/{project_id}/recover")
+    def recover_pipeline_step(
+        project_id: str,
+        user: Annotated[sqlite3.Row, Depends(current_user)],
+    ) -> dict:
+        try:
+            return state_machine.recover(project_id, user["id"])
+        except ProjectNotFound as error:
+            raise HTTPException(status_code=404, detail="Project not found") from error
+        except InvalidTransition as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
 
     return application
 
