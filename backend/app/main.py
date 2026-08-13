@@ -8,9 +8,19 @@ from typing import Annotated
 from uuid import uuid4
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Response, status
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, field_validator
 
 from .database import Database
+from .pipeline import (
+    FakePipelineExecutor,
+    InvalidTransition,
+    PipelineExecutor,
+    PipelineStateMachine,
+    PipelineStep,
+    ProjectNotFound,
+    StepExecutionFailed,
+)
 
 
 EMAIL_PATTERN = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
@@ -84,6 +94,9 @@ def project_dict(row: sqlite3.Row, book_text: str | None = None) -> dict:
             "completed_stage",
             "step_state",
             "active_step",
+            "step_started_at",
+            "step_error",
+            "style",
         )
     }
     if book_text is not None:
@@ -92,11 +105,16 @@ def project_dict(row: sqlite3.Row, book_text: str | None = None) -> dict:
 
 
 def create_app(
-    database_path: Path | str | None = None, data_dir: Path | str | None = None
+    database_path: Path | str | None = None,
+    data_dir: Path | str | None = None,
+    pipeline_executor: PipelineExecutor | None = None,
 ) -> FastAPI:
     root = Path(__file__).resolve().parents[2]
     resolved_data = Path(data_dir) if data_dir else root / "data"
     database = Database(Path(database_path) if database_path else resolved_data / "app.db")
+    state_machine = PipelineStateMachine(
+        database, pipeline_executor or FakePipelineExecutor()
+    )
 
     @asynccontextmanager
     async def lifespan(application: FastAPI):
@@ -225,6 +243,30 @@ def create_app(
         if row is None:
             raise HTTPException(status_code=404, detail="Project not found")
         return project_dict(row, read_book(row))
+
+    @application.post(
+        "/api/projects/{project_id}/steps/{step}", response_model=None
+    )
+    def execute_pipeline_step(
+        project_id: str,
+        step: str,
+        user: Annotated[sqlite3.Row, Depends(current_user)],
+    ) -> dict | JSONResponse:
+        try:
+            requested_step = PipelineStep(step.upper())
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail="Unknown pipeline step") from error
+        try:
+            return state_machine.execute(project_id, user["id"], requested_step)
+        except ProjectNotFound as error:
+            raise HTTPException(status_code=404, detail="Project not found") from error
+        except InvalidTransition as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        except StepExecutionFailed as error:
+            return JSONResponse(
+                status_code=502,
+                content={"detail": str(error), "project": error.project},
+            )
 
     return application
 
