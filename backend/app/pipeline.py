@@ -109,6 +109,22 @@ def pipeline_project_dict(
     return project
 
 
+def character_dict(row: Mapping[str, Any]) -> dict[str, Any]:
+    portrait_url = None
+    if row["image_state"] == "READY" and row["portrait_path"]:
+        portrait_url = (
+            f"/api/projects/{row['project_id']}/characters/{row['id']}/portrait"
+        )
+    return {
+        "id": row["id"],
+        "name": row["name"],
+        "prompt": row["prompt"],
+        "image_state": row["image_state"],
+        "image_error": row["image_error"],
+        "portrait_url": portrait_url,
+    }
+
+
 class PipelineStateMachine:
     def __init__(
         self, database: Database, executor: PipelineExecutor, process_instance_id: str
@@ -281,6 +297,14 @@ class PipelineStateMachine:
             recovered = recovery.rowcount == 1
 
         if recovered:
+            with self.database.connect() as connection:
+                connection.execute(
+                    """UPDATE characters
+                       SET image_state = 'FAILED',
+                           image_error = 'Portrait generation was interrupted by a backend restart'
+                       WHERE project_id = ? AND image_state = 'GENERATING'""",
+                    (project_id,),
+                )
             return self._get_project(project_id, user_id)
 
         project = self._get_project_row(project_id, user_id)
@@ -323,11 +347,13 @@ class PipelineStateMachine:
         project = pipeline_project_dict(row, self.process_instance_id)
         with self.database.connect() as connection:
             characters = connection.execute(
-                """SELECT name, prompt FROM characters
+                """SELECT id, project_id, name, prompt, portrait_path,
+                          image_state, image_error
+                   FROM characters
                    WHERE project_id = ? ORDER BY sort_order""",
                 (project_id,),
             ).fetchall()
-        project["characters"] = [dict(character) for character in characters]
+        project["characters"] = [character_dict(character) for character in characters]
         return project
 
     def _get_project_row(

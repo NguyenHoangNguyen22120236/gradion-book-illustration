@@ -45,6 +45,10 @@ CREATE TABLE IF NOT EXISTS characters (
     name TEXT NOT NULL,
     prompt TEXT NOT NULL,
     sort_order INTEGER NOT NULL CHECK (sort_order IN (0, 1)),
+    portrait_path TEXT,
+    image_state TEXT NOT NULL DEFAULT 'PENDING'
+        CHECK (image_state IN ('PENDING', 'GENERATING', 'READY', 'FAILED')),
+    image_error TEXT,
     UNIQUE(project_id, sort_order)
 );
 
@@ -67,3 +71,24 @@ class Database:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.connect() as connection:
             connection.executescript(SCHEMA)
+            self._migrate_characters_for_portraits(connection)
+
+    @staticmethod
+    def _migrate_characters_for_portraits(connection: sqlite3.Connection) -> None:
+        columns = {
+            row["name"]
+            for row in connection.execute("PRAGMA table_info(characters)").fetchall()
+        }
+        additions = {
+            "portrait_path": "TEXT",
+            "image_state": (
+                "TEXT NOT NULL DEFAULT 'PENDING' "
+                "CHECK (image_state IN ('PENDING', 'GENERATING', 'READY', 'FAILED'))"
+            ),
+            "image_error": "TEXT",
+        }
+        for name, definition in additions.items():
+            if name not in columns:
+                connection.execute(
+                    f"ALTER TABLE characters ADD COLUMN {name} {definition}"
+                )

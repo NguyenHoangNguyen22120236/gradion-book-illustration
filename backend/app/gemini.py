@@ -1,3 +1,4 @@
+import base64
 import json
 import os
 from dataclasses import dataclass
@@ -55,6 +56,7 @@ CHARACTERS_SCHEMA = {
 class GeminiSettings:
     api_key: str
     text_model: str = "gemini-3.5-flash"
+    image_model: str = "gemini-3.1-flash-image"
     timeout_seconds: float = 180.0
 
     @classmethod
@@ -63,6 +65,7 @@ class GeminiSettings:
         if not api_key:
             return None
         model = os.getenv("GEMINI_TEXT_MODEL", cls.text_model).strip()
+        image_model = os.getenv("GEMINI_IMAGE_MODEL", cls.image_model).strip()
         timeout_raw = os.getenv("GEMINI_OPERATION_TIMEOUT_SECONDS", "180")
         try:
             timeout = float(timeout_raw)
@@ -70,9 +73,20 @@ class GeminiSettings:
             raise RuntimeError(
                 "GEMINI_OPERATION_TIMEOUT_SECONDS must be a number"
             ) from error
-        if not model or timeout <= 0:
-            raise RuntimeError("Gemini model and timeout configuration must be valid")
-        return cls(api_key=api_key, text_model=model, timeout_seconds=timeout)
+        if not model or not image_model or timeout <= 0:
+            raise RuntimeError("Gemini models and timeout configuration must be valid")
+        return cls(
+            api_key=api_key,
+            text_model=model,
+            image_model=image_model,
+            timeout_seconds=timeout,
+        )
+
+
+@dataclass(frozen=True)
+class GeneratedImage:
+    data: bytes
+    mime_type: str
 
 
 class GeminiInteraction(Protocol):
@@ -91,6 +105,8 @@ class GeminiClient(Protocol):
         self, previous_interaction_id: str
     ) -> GeminiInteraction: ...
 
+    def generate_portrait(self, prompt: str) -> GeneratedImage: ...
+
 
 class GoogleGenAIClient:
     """Small wrapper around the official SDK's File and Interactions APIs."""
@@ -101,6 +117,7 @@ class GoogleGenAIClient:
         settings: GeminiSettings | None = None,
         sdk_client: Any | None = None,
         text_model: str | None = None,
+        image_model: str | None = None,
     ) -> None:
         if sdk_client is None:
             if settings is None:
@@ -116,8 +133,13 @@ class GoogleGenAIClient:
             )
         self._client = sdk_client
         self._text_model = text_model or (settings.text_model if settings else None)
+        self._image_model = image_model or (
+            settings.image_model if settings else GeminiSettings.image_model
+        )
         if not self._text_model:
             raise ValueError("A Gemini text model is required")
+        if not self._image_model:
+            raise ValueError("A Gemini image model is required")
 
     def upload_book(self, book_path: Path) -> str:
         uploaded = self._client.files.upload(
@@ -164,6 +186,26 @@ class GoogleGenAIClient:
             },
         )
 
+    def generate_portrait(self, prompt: str) -> GeneratedImage:
+        interaction = self._client.interactions.create(
+            model=self._image_model,
+            input=prompt,
+        )
+        output_image = getattr(interaction, "output_image", None)
+        encoded_data = getattr(output_image, "data", None)
+        mime_type = getattr(output_image, "mime_type", None)
+        if not isinstance(encoded_data, (str, bytes)) or not encoded_data:
+            raise RuntimeError("Gemini returned no portrait image data")
+        if not isinstance(mime_type, str) or not mime_type.strip():
+            raise RuntimeError("Gemini returned no portrait image type")
+        try:
+            image_data = base64.b64decode(encoded_data, validate=True)
+        except (ValueError, TypeError) as error:
+            raise RuntimeError("Gemini returned invalid portrait image data") from error
+        if not image_data:
+            raise RuntimeError("Gemini returned empty portrait image data")
+        return GeneratedImage(data=image_data, mime_type=mime_type.strip().lower())
+
 
 class CharacterCandidate(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
@@ -188,7 +230,7 @@ class CharacterResponse(BaseModel):
 
 
 class GeminiPipelineExecutor:
-    """Real Stage 5 executor; later pipeline steps deliberately remain local fakes."""
+    """Real executor for text steps through Characters and portrait generation."""
 
     def __init__(
         self, client: GeminiClient, database: Database, data_dir: Path
@@ -198,12 +240,18 @@ class GeminiPipelineExecutor:
         self.data_dir = data_dir
 
     def execute(self, step: str, project: dict[str, Any]) -> dict[str, Any]:
-        if step not in (PipelineStep.STYLE, PipelineStep.CHARACTERS):
+        if step not in (
+            PipelineStep.STYLE,
+            PipelineStep.CHARACTERS,
+            PipelineStep.PORTRAITS,
+        ):
             return {}
         try:
             if step == PipelineStep.STYLE:
                 return self._execute_style(project)
-            return self._execute_characters(project)
+            if step == PipelineStep.CHARACTERS:
+                return self._execute_characters(project)
+            return self._execute_portraits(project)
         except PipelineExecutionError:
             raise
         except Exception as error:
@@ -264,6 +312,115 @@ class GeminiPipelineExecutor:
                 for character in adults
             ],
         }
+
+    def _execute_portraits(self, project: dict[str, Any]) -> dict[str, Any]:
+        with self.database.connect() as connection:
+            characters = connection.execute(
+                """SELECT id, name, prompt, portrait_path, image_state
+                   FROM characters WHERE project_id = ? ORDER BY sort_order""",
+                (project["id"],),
+            ).fetchall()
+        if not characters:
+            raise PipelineExecutionError("Portraits require persisted characters")
+
+        for character in characters:
+            if self._portrait_is_available(character):
+                continue
+            self._mark_portrait_generating(character["id"])
+            try:
+                prompt = self._portrait_prompt(
+                    character["prompt"], project.get("style")
+                )
+                image = self.client.generate_portrait(prompt)
+                relative_path = self._save_portrait(
+                    project["id"], character["id"], image
+                )
+                with self.database.connect() as connection:
+                    connection.execute(
+                        """UPDATE characters
+                           SET portrait_path = ?, image_state = 'READY', image_error = NULL
+                           WHERE id = ? AND project_id = ?""",
+                        (relative_path, character["id"], project["id"]),
+                    )
+            except Exception as error:
+                message = f"Portrait generation failed for {character['name']}"
+                with self.database.connect() as connection:
+                    connection.execute(
+                        """UPDATE characters
+                           SET image_state = 'FAILED', image_error = ?
+                           WHERE id = ? AND project_id = ?""",
+                        (message, character["id"], project["id"]),
+                    )
+                raise PipelineExecutionError(message) from error
+        return {}
+
+    def _portrait_is_available(self, character: Any) -> bool:
+        portrait_path = character["portrait_path"]
+        if character["image_state"] != "READY" or not portrait_path:
+            return False
+        try:
+            path = self._resolve_data_path(portrait_path)
+        except ValueError:
+            return False
+        return path.is_file()
+
+    def _mark_portrait_generating(self, character_id: str) -> None:
+        with self.database.connect() as connection:
+            connection.execute(
+                """UPDATE characters
+                   SET image_state = 'GENERATING', image_error = NULL
+                   WHERE id = ?""",
+                (character_id,),
+            )
+
+    def _save_portrait(
+        self, project_id: str, character_id: str, image: GeneratedImage
+    ) -> str:
+        extensions = {
+            "image/png": ".png",
+            "image/jpeg": ".jpg",
+            "image/webp": ".webp",
+        }
+        extension = extensions.get(image.mime_type.lower())
+        if extension is None:
+            raise ValueError("Gemini returned an unsupported portrait image type")
+        if not image.data:
+            raise ValueError("Gemini returned empty portrait image data")
+
+        relative_path = (
+            Path("images")
+            / project_id
+            / "characters"
+            / f"{character_id}{extension}"
+        )
+        target = self._resolve_data_path(relative_path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        temporary = target.with_suffix(f"{target.suffix}.tmp")
+        try:
+            temporary.write_bytes(image.data)
+            temporary.replace(target)
+        finally:
+            temporary.unlink(missing_ok=True)
+        return relative_path.as_posix()
+
+    def _resolve_data_path(self, relative_path: str | Path) -> Path:
+        root = self.data_dir.resolve()
+        resolved = (root / relative_path).resolve()
+        try:
+            resolved.relative_to(root)
+        except ValueError as error:
+            raise ValueError("Portrait path is outside the data directory") from error
+        return resolved
+
+    @staticmethod
+    def _portrait_prompt(character_prompt: str, style: Any) -> str:
+        established_style = style if isinstance(style, str) and style.strip() else ""
+        return (
+            "Generate exactly one standalone character portrait. Do not add captions, "
+            "labels, borders, or additional characters.\n"
+            f"Established art style: {established_style}\n"
+            f"Character portrait prompt: {character_prompt}"
+        )
 
     @staticmethod
     def _require_interaction_id(interaction: GeminiInteraction) -> str:

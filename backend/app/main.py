@@ -8,7 +8,7 @@ from typing import Annotated
 from uuid import uuid4
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Response, status
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, field_validator
 
 from .database import Database
@@ -27,6 +27,7 @@ from .pipeline import (
     ProjectNotFound,
     StepExecutionFailed,
     can_recover_execution,
+    character_dict,
 )
 
 
@@ -230,14 +231,16 @@ def create_app(
         except FileNotFoundError as error:
             raise HTTPException(status_code=500, detail="Stored book file is missing") from error
 
-    def read_characters(project_id: str) -> list[dict[str, str]]:
+    def read_characters(project_id: str) -> list[dict]:
         with database.connect() as connection:
             rows = connection.execute(
-                """SELECT name, prompt FROM characters
+                """SELECT id, project_id, name, prompt, portrait_path,
+                          image_state, image_error
+                   FROM characters
                    WHERE project_id = ? ORDER BY sort_order""",
                 (project_id,),
             ).fetchall()
-        return [dict(row) for row in rows]
+        return [character_dict(row) for row in rows]
 
     @application.post("/api/projects", status_code=status.HTTP_201_CREATED)
     def create_project(
@@ -303,6 +306,46 @@ def create_app(
             read_book(row),
             read_characters(project_id),
         )
+
+    @application.get(
+        "/api/projects/{project_id}/characters/{character_id}/portrait",
+        response_model=None,
+    )
+    def get_character_portrait(
+        project_id: str,
+        character_id: str,
+        user: Annotated[sqlite3.Row, Depends(current_user)],
+    ) -> FileResponse:
+        with database.connect() as connection:
+            row = connection.execute(
+                """SELECT characters.portrait_path
+                   FROM characters
+                   JOIN projects ON projects.id = characters.project_id
+                   WHERE characters.id = ? AND characters.project_id = ?
+                     AND projects.user_id = ? AND characters.image_state = 'READY'""",
+                (character_id, project_id, user["id"]),
+            ).fetchone()
+        if row is None or not row["portrait_path"]:
+            raise HTTPException(status_code=404, detail="Portrait not found")
+
+        data_root = resolved_data.resolve()
+        portrait_path = (data_root / row["portrait_path"]).resolve()
+        try:
+            portrait_path.relative_to(data_root)
+        except ValueError as error:
+            raise HTTPException(status_code=404, detail="Portrait not found") from error
+        if not portrait_path.is_file():
+            raise HTTPException(status_code=404, detail="Portrait not found")
+        media_types = {
+            ".png": "image/png",
+            ".jpg": "image/jpeg",
+            ".jpeg": "image/jpeg",
+            ".webp": "image/webp",
+        }
+        media_type = media_types.get(portrait_path.suffix.lower())
+        if media_type is None:
+            raise HTTPException(status_code=404, detail="Portrait not found")
+        return FileResponse(portrait_path, media_type=media_type)
 
     @application.post(
         "/api/projects/{project_id}/steps/{step}", response_model=None
