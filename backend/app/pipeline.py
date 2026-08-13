@@ -2,6 +2,7 @@ from collections.abc import Mapping
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any, Protocol
+from uuid import uuid4
 
 from .database import Database
 
@@ -43,7 +44,7 @@ COMPLETED_BY_STEP = {
 class PipelineExecutor(Protocol):
     def execute(
         self, step: str, project: Mapping[str, Any]
-    ) -> dict[str, str]: ...
+    ) -> dict[str, Any]: ...
 
 
 class FakePipelineExecutor:
@@ -117,7 +118,11 @@ class PipelineStateMachine:
         self.process_instance_id = process_instance_id
 
     def execute(
-        self, project_id: str, user_id: str, requested_step: PipelineStep
+        self,
+        project_id: str,
+        user_id: str,
+        requested_step: PipelineStep,
+        requested_style: str | None = None,
     ) -> dict[str, Any]:
         started_at = datetime.now(UTC).isoformat()
         required_stage = next(
@@ -149,7 +154,8 @@ class PipelineStateMachine:
         if not claimed:
             self._raise_claim_failure(project_id, user_id, requested_step)
 
-        running_project = self._get_project(project_id, user_id)
+        running_project = dict(self._get_project_row(project_id, user_id))
+        running_project["requested_style"] = requested_style
         try:
             result = self.executor.execute(requested_step.value, running_project)
         except PipelineExecutionError as error:
@@ -175,18 +181,60 @@ class PipelineStateMachine:
 
         completed_at = datetime.now(UTC).isoformat()
         style = result.get("style") if requested_step == PipelineStep.STYLE else None
+        interaction_id = result.get("latest_interaction_id")
         with self.database.connect() as connection:
             if requested_step == PipelineStep.STYLE:
                 connection.execute(
                     """UPDATE projects
                        SET completed_stage = ?, step_state = 'IDLE', active_step = NULL,
                            step_started_at = NULL, step_error = NULL,
-                           execution_owner = NULL, style = ?, updated_at = ?
+                           execution_owner = NULL, style = ?,
+                           latest_interaction_id = COALESCE(?, latest_interaction_id),
+                           updated_at = ?
                        WHERE id = ? AND user_id = ? AND step_state = 'RUNNING'
                          AND active_step = ? AND execution_owner = ?""",
                     (
                         COMPLETED_BY_STEP[requested_step].value,
                         style,
+                        interaction_id,
+                        completed_at,
+                        project_id,
+                        user_id,
+                        requested_step.value,
+                        self.process_instance_id,
+                    ),
+                )
+            elif requested_step == PipelineStep.CHARACTERS:
+                characters = result.get("characters")
+                if characters is not None:
+                    connection.execute(
+                        "DELETE FROM characters WHERE project_id = ?", (project_id,)
+                    )
+                    for sort_order, character in enumerate(characters[:2]):
+                        connection.execute(
+                            """INSERT INTO characters
+                               (id, project_id, name, prompt, sort_order)
+                               VALUES (?, ?, ?, ?, ?)""",
+                            (
+                                str(uuid4()),
+                                project_id,
+                                character["name"],
+                                character["prompt"],
+                                sort_order,
+                            ),
+                        )
+                connection.execute(
+                    """UPDATE projects
+                       SET completed_stage = ?, step_state = 'IDLE', active_step = NULL,
+                           step_started_at = NULL, step_error = NULL,
+                           execution_owner = NULL,
+                           latest_interaction_id = COALESCE(?, latest_interaction_id),
+                           updated_at = ?
+                       WHERE id = ? AND user_id = ? AND step_state = 'RUNNING'
+                         AND active_step = ? AND execution_owner = ?""",
+                    (
+                        COMPLETED_BY_STEP[requested_step].value,
+                        interaction_id,
                         completed_at,
                         project_id,
                         user_id,
@@ -272,7 +320,15 @@ class PipelineStateMachine:
 
     def _get_project(self, project_id: str, user_id: str) -> dict[str, Any]:
         row = self._get_project_row(project_id, user_id)
-        return pipeline_project_dict(row, self.process_instance_id)
+        project = pipeline_project_dict(row, self.process_instance_id)
+        with self.database.connect() as connection:
+            characters = connection.execute(
+                """SELECT name, prompt FROM characters
+                   WHERE project_id = ? ORDER BY sort_order""",
+                (project_id,),
+            ).fetchall()
+        project["characters"] = [dict(character) for character in characters]
+        return project
 
     def _get_project_row(
         self, project_id: str, user_id: str

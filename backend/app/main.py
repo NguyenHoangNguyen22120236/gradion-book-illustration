@@ -12,6 +12,12 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, field_validator
 
 from .database import Database
+from .gemini import (
+    GeminiClient,
+    GeminiPipelineExecutor,
+    GeminiSettings,
+    GoogleGenAIClient,
+)
 from .pipeline import (
     FakePipelineExecutor,
     InvalidTransition,
@@ -80,6 +86,18 @@ class ProjectRequest(BaseModel):
         return value
 
 
+class StyleStepRequest(BaseModel):
+    style: str | None = None
+
+    @field_validator("style")
+    @classmethod
+    def normalize_style(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        return value or None
+
+
 def user_dict(row: sqlite3.Row) -> dict[str, str]:
     return {key: row[key] for key in ("id", "name", "email", "created_at")}
 
@@ -88,6 +106,7 @@ def project_dict(
     row: sqlite3.Row,
     process_instance_id: str,
     book_text: str | None = None,
+    characters: list[dict] | None = None,
 ) -> dict:
     result = {
         key: row[key]
@@ -105,6 +124,7 @@ def project_dict(
         )
     }
     result["can_recover"] = can_recover_execution(row, process_instance_id)
+    result["characters"] = characters or []
     if book_text is not None:
         result["book_text"] = book_text
     return result
@@ -115,13 +135,27 @@ def create_app(
     data_dir: Path | str | None = None,
     pipeline_executor: PipelineExecutor | None = None,
     process_instance_id: str | None = None,
+    gemini_client: GeminiClient | None = None,
 ) -> FastAPI:
     root = Path(__file__).resolve().parents[2]
     resolved_data = Path(data_dir) if data_dir else root / "data"
     database = Database(Path(database_path) if database_path else resolved_data / "app.db")
     backend_process_id = process_instance_id or str(uuid4())
+    if pipeline_executor is not None:
+        resolved_executor = pipeline_executor
+    elif gemini_client is not None:
+        resolved_executor = GeminiPipelineExecutor(gemini_client, database, resolved_data)
+    else:
+        gemini_settings = GeminiSettings.from_environment()
+        resolved_executor = (
+            GeminiPipelineExecutor(
+                GoogleGenAIClient(settings=gemini_settings), database, resolved_data
+            )
+            if gemini_settings
+            else FakePipelineExecutor()
+        )
     state_machine = PipelineStateMachine(
-        database, pipeline_executor or FakePipelineExecutor(), backend_process_id
+        database, resolved_executor, backend_process_id
     )
 
     @asynccontextmanager
@@ -196,6 +230,15 @@ def create_app(
         except FileNotFoundError as error:
             raise HTTPException(status_code=500, detail="Stored book file is missing") from error
 
+    def read_characters(project_id: str) -> list[dict[str, str]]:
+        with database.connect() as connection:
+            rows = connection.execute(
+                """SELECT name, prompt FROM characters
+                   WHERE project_id = ? ORDER BY sort_order""",
+                (project_id,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     @application.post("/api/projects", status_code=status.HTTP_201_CREATED)
     def create_project(
         payload: ProjectRequest,
@@ -226,7 +269,7 @@ def create_app(
                 ).fetchone()
         except OSError as error:
             raise HTTPException(status_code=500, detail="Could not save book text") from error
-        return project_dict(row, backend_process_id, payload.book_text)
+        return project_dict(row, backend_process_id, payload.book_text, [])
 
     @application.get("/api/projects")
     def list_projects(
@@ -237,7 +280,10 @@ def create_app(
                 "SELECT * FROM projects WHERE user_id = ? ORDER BY created_at DESC",
                 (user["id"],),
             ).fetchall()
-        return [project_dict(row, backend_process_id) for row in rows]
+        return [
+            project_dict(row, backend_process_id, characters=read_characters(row["id"]))
+            for row in rows
+        ]
 
     @application.get("/api/projects/{project_id}")
     def get_project(
@@ -251,7 +297,12 @@ def create_app(
             ).fetchone()
         if row is None:
             raise HTTPException(status_code=404, detail="Project not found")
-        return project_dict(row, backend_process_id, read_book(row))
+        return project_dict(
+            row,
+            backend_process_id,
+            read_book(row),
+            read_characters(project_id),
+        )
 
     @application.post(
         "/api/projects/{project_id}/steps/{step}", response_model=None
@@ -260,13 +311,21 @@ def create_app(
         project_id: str,
         step: str,
         user: Annotated[sqlite3.Row, Depends(current_user)],
+        payload: StyleStepRequest | None = None,
     ) -> dict | JSONResponse:
         try:
             requested_step = PipelineStep(step.upper())
         except ValueError as error:
             raise HTTPException(status_code=422, detail="Unknown pipeline step") from error
         try:
-            return state_machine.execute(project_id, user["id"], requested_step)
+            requested_style = (
+                payload.style
+                if requested_step == PipelineStep.STYLE and payload is not None
+                else None
+            )
+            return state_machine.execute(
+                project_id, user["id"], requested_step, requested_style
+            )
         except ProjectNotFound as error:
             raise HTTPException(status_code=404, detail="Project not found") from error
         except InvalidTransition as error:

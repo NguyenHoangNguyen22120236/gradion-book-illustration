@@ -38,6 +38,18 @@ CREATE TABLE IF NOT EXISTS projects (
 
 CREATE INDEX IF NOT EXISTS projects_user_created_idx
 ON projects(user_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS characters (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    prompt TEXT NOT NULL,
+    sort_order INTEGER NOT NULL CHECK (sort_order IN (0, 1)),
+    UNIQUE(project_id, sort_order)
+);
+
+CREATE INDEX IF NOT EXISTS characters_project_idx
+ON characters(project_id, sort_order);
 """
 
 
