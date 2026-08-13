@@ -3,7 +3,9 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-if [[ -x "$ROOT_DIR/.venv/bin/python" ]]; then
+if [[ -n "${BACKEND_PYTHON:-}" && -x "$BACKEND_PYTHON" ]]; then
+  PYTHON="$BACKEND_PYTHON"
+elif [[ -x "$ROOT_DIR/.venv/bin/python" ]]; then
   PYTHON="$ROOT_DIR/.venv/bin/python"
 elif [[ -x "$ROOT_DIR/.venv/Scripts/python.exe" ]]; then
   PYTHON="$ROOT_DIR/.venv/Scripts/python.exe"

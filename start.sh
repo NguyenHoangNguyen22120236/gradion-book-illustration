@@ -7,7 +7,9 @@ BACKEND_PORT="${BACKEND_PORT:-8000}"
 FRONTEND_HOST="${FRONTEND_HOST:-127.0.0.1}"
 FRONTEND_PORT="${FRONTEND_PORT:-5173}"
 
-if [[ -x "$ROOT_DIR/.venv/bin/python" ]]; then
+if [[ -n "${BACKEND_PYTHON:-}" && -x "$BACKEND_PYTHON" ]]; then
+  PYTHON="$BACKEND_PYTHON"
+elif [[ -x "$ROOT_DIR/.venv/bin/python" ]]; then
   PYTHON="$ROOT_DIR/.venv/bin/python"
 elif [[ -x "$ROOT_DIR/.venv/Scripts/python.exe" ]]; then
   PYTHON="$ROOT_DIR/.venv/Scripts/python.exe"
@@ -39,4 +41,3 @@ BACKEND_PID=$!
 FRONTEND_PID=$!
 
 wait -n "$BACKEND_PID" "$FRONTEND_PID"
-

@@ -9,6 +9,7 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 .venv/
+.stage2-venv/
 
 # Node and Vite
 node_modules/
