@@ -69,7 +69,7 @@ Responsibilities:
 - project detail,
 - five-step progress,
 - polling,
-- loading/error/retry/stale UI,
+- loading/error/retry/interrupted-run UI,
 - image rendering.
 
 The frontend is not the source of truth for pipeline state.
@@ -84,7 +84,7 @@ Responsibilities:
 - ordering,
 - concurrency control,
 - Gemini integration,
-- retry and stale recovery,
+- retry and interrupted-run recovery,
 - filesystem persistence,
 - image/book serving.
 
@@ -140,8 +140,10 @@ Suggested fields:
 - active_step
 - step_started_at
 - step_error
+- execution_owner
 - style
-- gemini_interaction_id
+- gemini_file_uri
+- latest_interaction_id
 
 `completed_stage`:
 - CREATED
@@ -229,10 +231,8 @@ Behavior:
 - title,
 - pasted text or `.txt`,
 - save local file,
-- upload book to Gemini once,
-- create initial interaction,
-- save interaction ID,
-- initialize project state.
+- initialize local project state only,
+- do not call Gemini during project creation.
 
 `GET /api/projects/{id}`
 - return current persisted project state.
@@ -268,6 +268,7 @@ SET
   step_state = 'RUNNING',
   active_step = :requested_step,
   step_started_at = CURRENT_TIMESTAMP,
+  execution_owner = :current_process_id,
   step_error = NULL
 WHERE
   id = :project_id
@@ -286,24 +287,27 @@ This must be covered by tests.
 
 ---
 
-## 6. Stale-step recovery
+## 6. Interrupted-step recovery
 
-Persist `step_started_at`.
+Persist both:
 
-Use a configurable setting such as:
+- `step_started_at` for observability and UX,
+- `execution_owner` to identify the backend process that claimed the step.
 
-```env
-STEP_STALE_AFTER_SECONDS=
-```
+Create a random backend process instance ID whenever FastAPI starts. Store that ID
+as `execution_owner` when a step is claimed.
 
-Do not use the demo's 8-second threshold.
+If a request sees a `RUNNING` step whose `execution_owner` matches the current
+backend process, treat that execution as active and do not start another Gemini
+call.
 
-When a running step is older than the configured threshold:
-- expose a recovery path,
-- keep all completed outputs,
-- make the current step retryable.
+After a backend restart, a persisted `RUNNING` step owned by a different process
+is considered interrupted. Expose a manual recovery/retry path without requiring
+database surgery, and keep all completed outputs.
 
-The final threshold should be chosen after observing real Gemini timings and recorded in `DECISIONS.md`.
+Elapsed time alone must never authorize a second Gemini call. Configure a
+conservative provider-operation timeout so a genuinely hung request eventually
+becomes `FAILED` and requires manual retry.
 
 ---
 
@@ -312,11 +316,19 @@ The final threshold should be chosen after observing real Gemini timings and rec
 ### Project creation
 
 1. Save book locally.
-2. Upload book once via Gemini File API.
-3. Start initial interaction using:
+2. Initialize local project state.
+3. Do not call Gemini.
+
+### First Step 1 execution
+
+When the user explicitly starts Style:
+
+1. Upload the book through Gemini File API if `gemini_file_uri` is not already persisted.
+2. Persist `gemini_file_uri` immediately after a successful upload.
+3. Start the initial interaction using:
    - instruction text,
    - uploaded document URI.
-4. Persist returned interaction ID.
+4. Persist the returned interaction ID as `latest_interaction_id`.
 
 Do not resend the entire book later.
 
@@ -330,7 +342,7 @@ If provided:
 
 Persist:
 - style,
-- latest interaction ID,
+- the new `latest_interaction_id`,
 - `STYLE_SET`.
 
 ### Step 2 — Characters
@@ -447,8 +459,8 @@ On failure:
 - show error,
 - allow retry of current step only.
 
-On stale state:
-- show interrupted/stale status,
+On interrupted state:
+- show interrupted status,
 - offer recovery.
 
 ---
@@ -544,7 +556,7 @@ feat: add resumable pipeline state machine
 
 ---
 
-### Stage 4 — Duplicate execution + stale recovery
+### Stage 4 — Duplicate execution + interrupted recovery
 
 Goal:
 Solve concurrency before real API cost exists.
@@ -553,13 +565,15 @@ Tasks:
 - atomic step claim,
 - duplicate request behavior,
 - concurrency tests,
-- stale detection,
+- backend process instance ID and execution ownership,
+- interrupted-run detection after backend restart,
 - recovery endpoint/action.
 
 Acceptance:
 - two concurrent calls produce one execution,
 - second does not invoke fake Gemini,
-- stale step can be recovered.
+- an interrupted step can be recovered manually,
+- elapsed time alone cannot authorize duplicate execution.
 
 Suggested commit:
 
@@ -578,7 +592,7 @@ Tasks:
 - Gemini configuration,
 - File API upload,
 - initial interaction,
-- persist interaction ID,
+- persist `gemini_file_uri` and `latest_interaction_id` separately,
 - style step,
 - structured character response,
 - adult/max-2 validation,
@@ -586,6 +600,7 @@ Tasks:
 
 Acceptance:
 - book uploaded once,
+- project creation remains local-only,
 - style generated/accepted,
 - later interaction reuses context,
 - at most 2 adult characters persisted.
@@ -667,7 +682,7 @@ Tasks:
 - polling,
 - running state,
 - failure/retry state,
-- stale recovery,
+- interrupted-run recovery,
 - responsive layout,
 - accessibility basics,
 - frontend tests.
@@ -700,7 +715,7 @@ Manual cases:
 9. Force/mock Gemini failure.
 10. Retry failed step.
 11. Restart backend between stages.
-12. Simulate stale-running state.
+12. Restart the backend with a persisted running state and recover it manually.
 13. Verify full book remains readable.
 14. Verify generated files remain available.
 15. Verify max 2 characters.
@@ -810,7 +825,7 @@ Before submission verify:
 - duplicate calls prevented server-side,
 - refresh/restart preserves state,
 - failures are manually retryable,
-- stale-running state is recoverable,
+- interrupted running state is manually recoverable,
 - images and book stored locally,
 - frontend shows required states,
 - frontend tests pass,
