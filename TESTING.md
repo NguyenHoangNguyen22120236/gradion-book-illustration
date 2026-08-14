@@ -17,6 +17,7 @@ Backend tests cover:
 - per-item portrait progress, immediate file persistence, partial-failure preservation, retrying only failed portraits, duplicate portrait prevention, authenticated image serving, and schema migration;
 - chapter ordering and conversation chaining, the one-chapter cap, illustration use of persisted prompts and portrait references, failure isolation, authenticated file serving, and generated-file availability after backend restart;
 - missing Gemini configuration and provider failures that persist safe user-facing errors without leaking raw provider details.
+- optional narration ordering and ownership, atomic claims, persisted running/success/failure state, transcript reuse on manual retry, no automatic retry, restart recovery, required-output preservation, authenticated WAV serving, and current single-speaker Gemini TTS request mechanics.
 
 Frontend component tests cover:
 
@@ -28,12 +29,15 @@ Frontend component tests cover:
 - generated character prompts, all portrait item states, chapter/final-illustration rendering, and authenticated image loading;
 - polling while `RUNNING` and stopping after `IDLE` or `FAILED`.
 - compact per-step attempt history for successful, failed/retried, running, and interrupted executions while preserving existing retry/recovery controls.
+- optional narration generation, named running state, persisted failure with manual retry, interrupted recovery, preservation of required outputs, and authenticated accessible audio playback.
 
 ## Deliberately not automated
 
 There is no full browser E2E suite; the assessment does not require one, and component/API tests cover the core state contracts more deterministically. Browser double-click and second-tab behavior therefore rely on tested backend concurrency plus manual UAT rather than browser automation.
 
 The suite does not run a real Gemini five-step happy path. Doing so would consume quota and introduce provider, model, and network nondeterminism. The provider boundary and full pipeline behavior are instead exercised with controlled mocks.
+
+The suite also does not call real Gemini TTS. Transcript extraction and speech generation are mocked, including raw PCM-to-WAV persistence, so automated tests consume no narration quota.
 
 Responsive and accessibility behavior has implementation-level semantics and component coverage, but there has not been a complete real-browser accessibility audit across breakpoints, keyboard paths, and assistive technologies.
 
@@ -58,7 +62,7 @@ These checks were manual browser verification and are not part of the automated 
 ## Real test report
 
 Run on 2026-08-14 through Git Bash on Windows. The command completed with exit code 0. ANSI color codes are omitted below; all result text and timings are from the real run.
-The local `.venv` launcher referenced a removed Python installation, so this run supplied the installed Python 3.12 executable through `BACKEND_PYTHON` and reused the environment's existing packages through `PYTHONPATH`; `test.sh` itself was unchanged.
+The local `.venv` launcher referenced a removed Python installation, so this run supplied the installed Python 3.12 executable through `BACKEND_PYTHON`; `test.sh` itself was unchanged.
 
 ```text
 $ ./test.sh
@@ -67,33 +71,34 @@ platform win32 -- Python 3.12.10, pytest-8.4.2, pluggy-1.6.0
 rootdir: C:\GitHub\gradion-book-illustration\backend
 configfile: pytest.ini
 testpaths: tests
-plugins: anyio-4.14.2
-collected 60 items
+plugins: anyio-4.9.0
+collected 70 items
 
-tests\test_attempt_history.py .......                                    [ 11%]
-tests\test_chapters_illustrations.py .........                           [ 26%]
-tests\test_gemini_pipeline.py ..........                                 [ 43%]
-tests\test_health.py .                                                   [ 45%]
-tests\test_pipeline.py ...........                                       [ 63%]
-tests\test_portraits.py .........                                        [ 78%]
-tests\test_projects.py .........                                         [ 93%]
+tests\test_attempt_history.py .......                                    [ 10%]
+tests\test_chapters_illustrations.py .........                           [ 22%]
+tests\test_gemini_pipeline.py ..........                                 [ 37%]
+tests\test_health.py .                                                   [ 38%]
+tests\test_narration.py ..........                                       [ 52%]
+tests\test_pipeline.py ...........                                       [ 68%]
+tests\test_portraits.py .........                                        [ 81%]
+tests\test_projects.py .........                                         [ 94%]
 tests\test_session.py ....                                               [100%]
 
-============================= 60 passed in 7.92s ==============================
+============================= 70 passed in 7.33s ==============================
 
 > gradion-book-illustration-frontend@0.1.0 test
 > vitest run
 
  RUN  v3.2.7 C:/GitHub/gradion-book-illustration/frontend
 
- ✓ src/App.test.tsx (21 tests) 3383ms
+ ✓ src/App.test.tsx (26 tests) 1742ms
 
  Test Files  1 passed (1)
-      Tests  21 passed (21)
-   Start at  13:35:18
-   Duration  6.04s (transform 321ms, setup 171ms, collect 604ms, tests 3.38s, environment 1.13s, prepare 299ms)
+      Tests  26 passed (26)
+   Start at  14:52:01
+   Duration  4.65s (transform 174ms, setup 148ms, collect 433ms, tests 1.74s, environment 786ms, prepare 350ms)
 ```
 
 The requested frontend production check also completed successfully on
 2026-08-14: `npm run build` ran `tsc -b && vite build`, transformed 30 modules,
-and completed the Vite build in 996ms.
+and completed the Vite build in 1.22s.

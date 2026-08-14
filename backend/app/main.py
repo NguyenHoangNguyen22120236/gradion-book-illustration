@@ -31,6 +31,12 @@ from .pipeline import (
     character_dict,
     attempt_dict,
 )
+from .narration import (
+    NarrationExecutionFailed,
+    NarrationStateMachine,
+    UnconfiguredNarrationClient,
+    read_narration,
+)
 from .sample_books import SAMPLE_BOOKS, read_sample_book
 
 
@@ -125,6 +131,7 @@ def project_dict(
     characters: list[dict] | None = None,
     chapters: list[dict] | None = None,
     attempts: list[dict] | None = None,
+    narration: dict | None = None,
 ) -> dict:
     result = {
         key: row[key]
@@ -145,6 +152,13 @@ def project_dict(
     result["characters"] = characters or []
     result["chapters"] = chapters or []
     result["attempts"] = attempts or []
+    result["narration"] = narration or {
+        "state": "IDLE",
+        "started_at": None,
+        "error": None,
+        "can_recover": False,
+        "audio_url": None,
+    }
     if book_text is not None:
         result["book_text"] = book_text
     return result
@@ -161,21 +175,28 @@ def create_app(
     resolved_data = Path(data_dir) if data_dir else root / "data"
     database = Database(Path(database_path) if database_path else resolved_data / "app.db")
     backend_process_id = process_instance_id or str(uuid4())
+    resolved_gemini_client: GeminiClient | None = gemini_client
     if pipeline_executor is not None:
         resolved_executor = pipeline_executor
     elif gemini_client is not None:
         resolved_executor = GeminiPipelineExecutor(gemini_client, database, resolved_data)
     else:
         gemini_settings = GeminiSettings.from_environment()
-        resolved_executor = (
-            GeminiPipelineExecutor(
-                GoogleGenAIClient(settings=gemini_settings), database, resolved_data
+        if gemini_settings:
+            resolved_gemini_client = GoogleGenAIClient(settings=gemini_settings)
+            resolved_executor = GeminiPipelineExecutor(
+                resolved_gemini_client, database, resolved_data
             )
-            if gemini_settings
-            else UnconfiguredPipelineExecutor()
-        )
+        else:
+            resolved_executor = UnconfiguredPipelineExecutor()
     state_machine = PipelineStateMachine(
         database, resolved_executor, backend_process_id
+    )
+    narration_state_machine = NarrationStateMachine(
+        database,
+        resolved_gemini_client or UnconfiguredNarrationClient(),
+        resolved_data,
+        backend_process_id,
     )
 
     @asynccontextmanager
@@ -183,6 +204,7 @@ def create_app(
         resolved_data.mkdir(parents=True, exist_ok=True)
         (resolved_data / "books").mkdir(exist_ok=True)
         (resolved_data / "images").mkdir(exist_ok=True)
+        (resolved_data / "audio").mkdir(exist_ok=True)
         database.initialize()
         yield
 
@@ -350,6 +372,7 @@ def create_app(
                 backend_process_id,
                 characters=read_characters(row["id"]),
                 chapters=read_chapters(row["id"]),
+                narration=read_narration(database, row["id"], backend_process_id),
             )
             for row in rows
         ]
@@ -373,7 +396,35 @@ def create_app(
             read_characters(project_id),
             read_chapters(project_id),
             read_attempts(project_id),
+            read_narration(database, project_id, backend_process_id),
         )
+
+    @application.get(
+        "/api/projects/{project_id}/narration/audio",
+        response_model=None,
+    )
+    def get_narration_audio(
+        project_id: str,
+        user: Annotated[sqlite3.Row, Depends(current_user)],
+    ) -> FileResponse:
+        with database.connect() as connection:
+            row = connection.execute(
+                """SELECT narrations.audio_path
+                   FROM narrations
+                   JOIN projects ON projects.id = narrations.project_id
+                   WHERE narrations.project_id = ? AND projects.user_id = ?
+                     AND narrations.state = 'COMPLETED'""",
+                (project_id, user["id"]),
+            ).fetchone()
+        if row is None or not row["audio_path"]:
+            raise HTTPException(status_code=404, detail="Narration not found")
+        try:
+            audio_path = narration_state_machine.resolve_audio_path(row["audio_path"])
+        except ValueError as error:
+            raise HTTPException(status_code=404, detail="Narration not found") from error
+        if not audio_path.is_file():
+            raise HTTPException(status_code=404, detail="Narration not found")
+        return FileResponse(audio_path, media_type="audio/wav")
 
     def stored_image_response(relative_path: str | None, label: str) -> FileResponse:
         if not relative_path:
@@ -480,6 +531,35 @@ def create_app(
     ) -> dict:
         try:
             return state_machine.recover(project_id, user["id"])
+        except ProjectNotFound as error:
+            raise HTTPException(status_code=404, detail="Project not found") from error
+        except InvalidTransition as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+
+    @application.post("/api/projects/{project_id}/narration", response_model=None)
+    def execute_narration(
+        project_id: str,
+        user: Annotated[sqlite3.Row, Depends(current_user)],
+    ) -> dict | JSONResponse:
+        try:
+            return narration_state_machine.execute(project_id, user["id"])
+        except ProjectNotFound as error:
+            raise HTTPException(status_code=404, detail="Project not found") from error
+        except InvalidTransition as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        except NarrationExecutionFailed as error:
+            return JSONResponse(
+                status_code=502,
+                content={"detail": str(error), "project": error.project},
+            )
+
+    @application.post("/api/projects/{project_id}/narration/recover")
+    def recover_narration(
+        project_id: str,
+        user: Annotated[sqlite3.Row, Depends(current_user)],
+    ) -> dict:
+        try:
+            return narration_state_machine.recover(project_id, user["id"])
         except ProjectNotFound as error:
             raise HTTPException(status_code=404, detail="Project not found") from error
         except InvalidTransition as error:

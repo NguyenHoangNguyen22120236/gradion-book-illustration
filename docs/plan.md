@@ -826,6 +826,8 @@ Do not loosen either cap through frontend-only validation.
 
 #### Bonus 5 — One later notebook section
 
+Status: Complete (2026-08-14) — TTS narration.
+
 Goal:
 Implement exactly one later notebook feature after verifying its mechanics in
 the source notebook and current official API documentation.

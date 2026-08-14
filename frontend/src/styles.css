@@ -180,6 +180,13 @@ textarea { resize: vertical; line-height: 1.65; }
 .spinner { display: inline-block; flex: 0 0 25px; width: 25px; height: 25px; border: 3px solid #dfd8cf; border-top-color: var(--orange); border-radius: 50%; animation: spin .8s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 .result-section { padding: clamp(1.35rem, 4vw, 2rem); }
+.narration-panel { border-color: #d8c7b4; background: linear-gradient(145deg, #fff, #fff8f1); }
+.narration-panel > p:not(.section-kicker) { color: var(--muted); line-height: 1.6; }
+.narration-panel audio { width: 100%; margin-top: .65rem; }
+.narration-state { display: flex; align-items: center; gap: 1rem; margin-top: 1rem; padding: 1rem; border-radius: 10px; background: var(--paper); }
+.narration-state h3, .narration-state p { margin-bottom: .25rem; }
+.narration-state > p, .narration-state div > p { color: var(--muted); line-height: 1.55; }
+.narration-state.warning-panel, .narration-state.error-panel { display: block; }
 .style-result { background: var(--paper); }
 .style-result h2 { margin-bottom: .6rem; }
 .style-result p:last-child { margin-bottom: 0; color: var(--muted); line-height: 1.7; }

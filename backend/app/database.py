@@ -87,6 +87,17 @@ CREATE TABLE IF NOT EXISTS chapters (
 
 CREATE INDEX IF NOT EXISTS chapters_project_idx
 ON chapters(project_id, sort_order);
+
+CREATE TABLE IF NOT EXISTS narrations (
+    project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+    state TEXT NOT NULL DEFAULT 'IDLE'
+        CHECK (state IN ('IDLE', 'RUNNING', 'FAILED', 'COMPLETED')),
+    started_at TEXT,
+    error TEXT,
+    execution_owner TEXT,
+    transcript TEXT,
+    audio_path TEXT
+);
 """
 
 

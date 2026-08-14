@@ -30,9 +30,17 @@ export async function api<T>(
 }
 
 export async function authenticatedImage(url: string, token: string) {
+  return authenticatedMedia(url, token, "Generated image could not be loaded");
+}
+
+export async function authenticatedMedia(
+  url: string,
+  token: string,
+  errorMessage = "Protected media could not be loaded",
+) {
   const response = await fetch(url, {
     headers: { Authorization: `Bearer ${token}` },
   });
-  if (!response.ok) throw new Error("Generated image could not be loaded");
+  if (!response.ok) throw new Error(errorMessage);
   return response.blob();
 }

@@ -513,6 +513,11 @@ class PipelineStateMachine:
         project["characters"] = [character_dict(character) for character in characters]
         project["chapters"] = [chapter_dict(chapter) for chapter in chapters]
         project["attempts"] = [attempt_dict(attempt) for attempt in attempts]
+        from .narration import read_narration
+
+        project["narration"] = read_narration(
+            self.database, project_id, self.process_instance_id
+        )
         return project
 
     def _get_project_row(
