@@ -1,6 +1,6 @@
 import { ChangeEvent, FormEvent, useCallback, useEffect, useState } from "react";
 
-import { api, authenticatedImage } from "./api";
+import { api, authenticatedImage, authenticatedMedia } from "./api";
 import type {
   Character,
   Chapter,
@@ -9,6 +9,7 @@ import type {
   PipelineAttempt,
   PipelineStep,
   Project,
+  Narration,
   SampleBook,
   User,
 } from "./types";
@@ -16,6 +17,13 @@ import "./styles.css";
 
 const SESSION_KEY = "gradionSession";
 const POLL_INTERVAL_MS = 2000;
+const IDLE_NARRATION: Narration = {
+  state: "IDLE",
+  started_at: null,
+  error: null,
+  can_recover: false,
+  audio_url: null,
+};
 
 const STEPS: Array<{ key: PipelineStep; label: string; completeAt: CompletedStage }> = [
   { key: "STYLE", label: "Style", completeAt: "STYLE_SET" },
@@ -428,7 +436,7 @@ function ProjectDetail({ project, token, loadProject }: { project: Project; toke
   const refresh = useCallback(() => loadProject(project.id), [loadProject, project.id]);
 
   useEffect(() => {
-    if (project.step_state !== "RUNNING" && !mutating) return;
+    if (project.step_state !== "RUNNING" && project.narration?.state !== "RUNNING" && !mutating) return;
     let cancelled = false;
     const poll = async () => {
       try {
@@ -443,7 +451,7 @@ function ProjectDetail({ project, token, loadProject }: { project: Project; toke
       cancelled = true;
       window.clearInterval(interval);
     };
-  }, [mutating, project.step_state, refresh]);
+  }, [mutating, project.narration?.state, project.step_state, refresh]);
 
   const runStep = async (step: PipelineStep) => {
     setMutating(true);
@@ -480,6 +488,36 @@ function ProjectDetail({ project, token, loadProject }: { project: Project; toke
     }
   };
 
+  const runNarration = async () => {
+    setMutating(true);
+    setActionError("");
+    try {
+      await api<Project>(`/projects/${project.id}/narration`, { method: "POST" }, token);
+    } catch (reason) {
+      setActionError((reason as Error).message);
+    } finally {
+      try {
+        await refresh();
+      } catch (reason) {
+        setActionError((reason as Error).message);
+      }
+      setMutating(false);
+    }
+  };
+
+  const recoverNarration = async () => {
+    setMutating(true);
+    setActionError("");
+    try {
+      await api<Project>(`/projects/${project.id}/narration/recover`, { method: "POST" }, token);
+      await refresh();
+    } catch (reason) {
+      setActionError((reason as Error).message);
+    } finally {
+      setMutating(false);
+    }
+  };
+
   return (
     <main className="page detail-page">
       <button className="back-link" onClick={() => navigate("/projects")}>← Back to projects</button>
@@ -488,6 +526,16 @@ function ProjectDetail({ project, token, loadProject }: { project: Project; toke
       <div className="detail-layout">
         <div className="detail-main">
           <ActionPanel project={project} style={style} onStyle={setStyle} busy={mutating} error={actionError} onRun={runStep} onRecover={recover} />
+          {project.completed_stage === "DONE" && (
+            <NarrationPanel
+              narration={project.narration ?? IDLE_NARRATION}
+              token={token}
+              busy={mutating}
+              error={actionError}
+              onRun={runNarration}
+              onRecover={recoverNarration}
+            />
+          )}
           <AttemptHistory attempts={project.attempts ?? []} />
           {project.style && <section className="result-section style-result"><p className="section-kicker">Established art direction</p><h2>Style</h2><p>{project.style}</p></section>}
           {project.characters.length > 0 && <section className="result-section"><div className="section-heading"><div><p className="section-kicker">Cast</p><h2>Characters</h2></div><span>{project.characters.length} of 2 maximum</span></div><div className="character-grid">{project.characters.map((character) => <CharacterCard key={character.id} character={character} token={token} />)}</div></section>}
@@ -497,6 +545,74 @@ function ProjectDetail({ project, token, loadProject }: { project: Project; toke
       </div>
     </main>
   );
+}
+
+function NarrationPanel({ narration, token, busy, error, onRun, onRecover }: { narration: Narration; token: string; busy: boolean; error: string; onRun: () => void; onRecover: () => void }) {
+  return (
+    <section className="result-section narration-panel" aria-labelledby="narration-title">
+      <p className="section-kicker">Optional bonus</p>
+      <h2 id="narration-title">Narration</h2>
+      {narration.state === "IDLE" && (
+        <>
+          <p>Generate a single-speaker reading of a short opening excerpt from chapter one.</p>
+          {error && <p className="form-error" role="alert">{error}</p>}
+          <button className="primary" disabled={busy} onClick={onRun}>{busy ? "Starting narrationâ€¦" : "Generate narration"}</button>
+        </>
+      )}
+      {narration.state === "RUNNING" && narration.can_recover && (
+        <div className="narration-state warning-panel">
+          <h3>Narration was interrupted.</h3>
+          <p>Recover the interrupted state first. Generation will not restart until you explicitly retry it.</p>
+          {error && <p className="form-error" role="alert">{error}</p>}
+          <button className="secondary" disabled={busy} onClick={onRecover}>{busy ? "Recoveringâ€¦" : "Recover narration"}</button>
+        </div>
+      )}
+      {narration.state === "RUNNING" && !narration.can_recover && (
+        <div className="narration-state" aria-live="polite">
+          <span className="spinner" aria-hidden="true" />
+          <div><h3>Generating narrationâ€¦</h3><p>The protected audio will appear here when it is ready.</p></div>
+        </div>
+      )}
+      {narration.state === "FAILED" && (
+        <div className="narration-state error-panel">
+          <h3>Narration generation failed.</h3>
+          <p className="persisted-error" role="alert">{narration.error || "Narration failed without an error message."}</p>
+          {error && <p className="form-error" role="alert">{error}</p>}
+          <button className="primary" disabled={busy} onClick={onRun}>{busy ? "Retrying narrationâ€¦" : "Retry narration"}</button>
+        </div>
+      )}
+      {narration.state === "COMPLETED" && narration.audio_url && (
+        <AuthenticatedAudio url={narration.audio_url} token={token} />
+      )}
+    </section>
+  );
+}
+
+function AuthenticatedAudio({ url, token }: { url: string; token: string }) {
+  const [objectUrl, setObjectUrl] = useState("");
+  const [loadError, setLoadError] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+    let createdUrl = "";
+    void authenticatedMedia(url, token, "Narration audio could not be loaded")
+      .then((blob) => {
+        if (cancelled) return;
+        createdUrl = URL.createObjectURL(blob);
+        setObjectUrl(createdUrl);
+      })
+      .catch((reason: Error) => {
+        if (!cancelled) setLoadError(reason.message);
+      });
+    return () => {
+      cancelled = true;
+      if (createdUrl) URL.revokeObjectURL(createdUrl);
+    };
+  }, [token, url]);
+
+  if (loadError) return <p className="form-error" role="alert">{loadError}</p>;
+  if (!objectUrl) return <div className="narration-state" aria-live="polite"><span className="spinner" aria-hidden="true" /><p>Loading narrationâ€¦</p></div>;
+  return <audio controls src={objectUrl} aria-label="Chapter opening narration" />;
 }
 
 function AttemptHistory({ attempts }: { attempts: PipelineAttempt[] }) {

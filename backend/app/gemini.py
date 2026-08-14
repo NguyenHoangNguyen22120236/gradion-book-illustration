@@ -30,6 +30,11 @@ image-generation prompt. The prompt must describe the setting, action, compositi
 lighting, and mood, and explicitly name the relevant established characters so their saved
 portraits can be used as visual references. Do not refer to unavailable text or context."""
 
+NARRATION_TRANSCRIPT_INSTRUCTION = """Extract one coherent opening dialogue or narrated
+scene from the first chapter of the supplied book. Preserve the book's source wording; do
+not summarize, continue, or invent prose. Return only a narrator-ready excerpt of at most
+500 words, without Markdown fences, commentary, or production notes."""
+
 CHARACTERS_SCHEMA = {
     "type": "object",
     "properties": {
@@ -92,6 +97,7 @@ class GeminiSettings:
     api_key: str
     text_model: str = "gemini-3.5-flash"
     image_model: str = "gemini-3.1-flash-image"
+    tts_model: str = "gemini-3.1-flash-tts-preview"
     timeout_seconds: float = 180.0
 
     @classmethod
@@ -101,6 +107,7 @@ class GeminiSettings:
             return None
         model = os.getenv("GEMINI_TEXT_MODEL", cls.text_model).strip()
         image_model = os.getenv("GEMINI_IMAGE_MODEL", cls.image_model).strip()
+        tts_model = os.getenv("GEMINI_TTS_MODEL", cls.tts_model).strip()
         timeout_raw = os.getenv("GEMINI_OPERATION_TIMEOUT_SECONDS", "180")
         try:
             timeout = float(timeout_raw)
@@ -108,12 +115,13 @@ class GeminiSettings:
             raise RuntimeError(
                 "GEMINI_OPERATION_TIMEOUT_SECONDS must be a number"
             ) from error
-        if not model or not image_model or timeout <= 0:
+        if not model or not image_model or not tts_model or timeout <= 0:
             raise RuntimeError("Gemini models and timeout configuration must be valid")
         return cls(
             api_key=api_key,
             text_model=model,
             image_model=image_model,
+            tts_model=tts_model,
             timeout_seconds=timeout,
         )
 
@@ -122,6 +130,11 @@ class GeminiSettings:
 class GeneratedImage:
     data: bytes
     mime_type: str
+
+
+@dataclass(frozen=True)
+class GeneratedAudio:
+    data: bytes
 
 
 class GeminiInteraction(Protocol):
@@ -150,6 +163,10 @@ class GeminiClient(Protocol):
         self, prompt: str, portrait_references: list[GeneratedImage]
     ) -> GeneratedImage: ...
 
+    def create_narration_transcript(self, file_uri: str) -> GeminiInteraction: ...
+
+    def generate_speech(self, transcript: str) -> GeneratedAudio: ...
+
 
 class GoogleGenAIClient:
     """Small wrapper around the official SDK's File and Interactions APIs."""
@@ -161,6 +178,7 @@ class GoogleGenAIClient:
         sdk_client: Any | None = None,
         text_model: str | None = None,
         image_model: str | None = None,
+        tts_model: str | None = None,
     ) -> None:
         if sdk_client is None:
             if settings is None:
@@ -179,10 +197,15 @@ class GoogleGenAIClient:
         self._image_model = image_model or (
             settings.image_model if settings else GeminiSettings.image_model
         )
+        self._tts_model = tts_model or (
+            settings.tts_model if settings else GeminiSettings.tts_model
+        )
         if not self._text_model:
             raise ValueError("A Gemini text model is required")
         if not self._image_model:
             raise ValueError("A Gemini image model is required")
+        if not self._tts_model:
+            raise ValueError("A Gemini TTS model is required")
 
     def upload_book(self, book_path: Path) -> str:
         uploaded = self._client.files.upload(
@@ -266,6 +289,41 @@ class GoogleGenAIClient:
             input=[{"type": "text", "text": prompt}, *image_inputs],
         )
         return self._generated_image(interaction, "illustration")
+
+    def create_narration_transcript(self, file_uri: str) -> GeminiInteraction:
+        return self._client.interactions.create(
+            model=self._text_model,
+            input=[
+                {"type": "text", "text": NARRATION_TRANSCRIPT_INSTRUCTION},
+                {
+                    "type": "document",
+                    "uri": file_uri,
+                    "mime_type": "text/plain",
+                },
+            ],
+        )
+
+    def generate_speech(self, transcript: str) -> GeneratedAudio:
+        interaction = self._client.interactions.create(
+            model=self._tts_model,
+            input=(
+                "Synthesize the following book excerpt as speech. Read only the text under "
+                f"TRANSCRIPT.\n\nTRANSCRIPT:\n{transcript}"
+            ),
+            response_format={"type": "audio"},
+            generation_config={"speech_config": [{"voice": "Aoede"}]},
+        )
+        output_audio = getattr(interaction, "output_audio", None)
+        encoded_data = getattr(output_audio, "data", None)
+        if not isinstance(encoded_data, (str, bytes)) or not encoded_data:
+            raise RuntimeError("Gemini returned no narration audio data")
+        try:
+            audio_data = base64.b64decode(encoded_data, validate=True)
+        except (ValueError, TypeError) as error:
+            raise RuntimeError("Gemini returned invalid narration audio data") from error
+        if not audio_data:
+            raise RuntimeError("Gemini returned empty narration audio data")
+        return GeneratedAudio(data=audio_data)
 
     @staticmethod
     def _generated_image(interaction: Any, label: str) -> GeneratedImage:

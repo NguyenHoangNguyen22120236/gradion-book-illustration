@@ -16,6 +16,15 @@ export type PipelineStep =
 export type StepState = "IDLE" | "RUNNING" | "FAILED";
 export type ImageState = "PENDING" | "GENERATING" | "READY" | "FAILED";
 export type AttemptOutcome = "RUNNING" | "SUCCEEDED" | "FAILED" | "INTERRUPTED";
+export type NarrationState = "IDLE" | "RUNNING" | "FAILED" | "COMPLETED";
+
+export type Narration = {
+  state: NarrationState;
+  started_at: string | null;
+  error: string | null;
+  can_recover: boolean;
+  audio_url: string | null;
+};
 
 export type PipelineAttempt = {
   id: string;
@@ -73,5 +82,6 @@ export type Project = {
   characters: Character[];
   chapters: Chapter[];
   attempts: PipelineAttempt[];
+  narration: Narration;
   book_text?: string;
 };

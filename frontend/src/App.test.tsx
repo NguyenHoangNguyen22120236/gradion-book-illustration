@@ -479,7 +479,9 @@ describe("App", () => {
     expect(screen.getByRole("heading", { name: "Spring Cleaning" })).toBeInTheDocument();
     expect(screen.getByText(/mole emerges into a sunlit meadow/i)).toBeInTheDocument();
     expect(await screen.findByRole("img", { name: /illustration for spring cleaning/i })).toHaveAttribute("src", "blob:authenticated-image");
-    expect(screen.queryByRole("button", { name: /^generate/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", {
+      name: /generate (style|characters|portraits|chapters|illustrations)/i,
+    })).not.toBeInTheDocument();
   });
 
   it("polls project detail while backend state is RUNNING", async () => {
@@ -543,5 +545,133 @@ describe("App", () => {
 
     await waitFor(() => expect(detailCalls).toBe(2));
     await waitFor(() => expect(clearIntervalSpy).toHaveBeenCalledWith(currentPollId));
+  });
+
+  it("offers explicit narration generation only after the required pipeline is done", async () => {
+    const done = {
+      ...project,
+      completed_stage: "DONE",
+      narration: {
+        state: "IDLE",
+        started_at: null,
+        error: null,
+        can_recover: false,
+        audio_url: null,
+      },
+    };
+    let started = false;
+    const fetchMock = await openProject(done, (path, init) => {
+      if (path.endsWith("/narration") && init.method === "POST") {
+        started = true;
+        return response({
+          ...done,
+          narration: { ...done.narration, state: "RUNNING" },
+        });
+      }
+      if (started && path.endsWith(project.id)) return response(done);
+      return undefined as never;
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: /generate narration/i }));
+
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/projects/project-1/narration",
+        expect.objectContaining({ method: "POST" }),
+      ),
+    );
+  });
+
+  it("shows named narration progress and disables duplicate generation", async () => {
+    await openProject({
+      ...project,
+      completed_stage: "DONE",
+      narration: {
+        state: "RUNNING",
+        started_at: "2026-01-02T15:00:00Z",
+        error: null,
+        can_recover: false,
+        audio_url: null,
+      },
+    });
+
+    expect(screen.getByText(/generating narration/i)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /generate narration/i })).not.toBeInTheDocument();
+  });
+
+  it("shows narration failure and manual retry without hiding required outputs", async () => {
+    const failed = {
+      ...project,
+      completed_stage: "DONE",
+      style: "Watercolor",
+      chapters: [
+        {
+          id: "chapter-1",
+          name: "Spring Cleaning",
+          prompt: "Mole emerges into a sunlit meadow",
+          image_state: "READY",
+          image_error: null,
+          illustration_url: null,
+        },
+      ],
+      narration: {
+        state: "FAILED",
+        started_at: "2026-01-02T15:00:00Z",
+        error: "Gemini narration request failed",
+        can_recover: false,
+        audio_url: null,
+      },
+    };
+    await openProject(failed);
+
+    expect(screen.getByText(/gemini narration request failed/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /retry narration/i })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Spring Cleaning" })).toBeInTheDocument();
+    expect(screen.getByText(/mole emerges into a sunlit meadow/i)).toBeInTheDocument();
+  });
+
+  it("renders completed narration in an accessible audio controls player", async () => {
+    const done = {
+      ...project,
+      completed_stage: "DONE",
+      narration: {
+        state: "COMPLETED",
+        started_at: "2026-01-02T15:00:00Z",
+        error: null,
+        can_recover: false,
+        audio_url: "/api/projects/project-1/narration/audio",
+      },
+    };
+    await openProject(done, (path) =>
+      path.endsWith("/narration/audio")
+        ? Promise.resolve(
+            new Response(new Blob(["audio"], { type: "audio/wav" }), { status: 200 }),
+          )
+        : (undefined as never),
+    );
+
+    await waitFor(() =>
+      expect(document.querySelector("audio[controls]")).toBeInTheDocument(),
+    );
+    const player = document.querySelector("audio[controls]");
+    expect(player).toHaveAttribute("src", "blob:authenticated-image");
+    expect(player).toHaveAccessibleName(/chapter opening narration/i);
+  });
+
+  it("offers explicit recovery for narration interrupted by a backend restart", async () => {
+    await openProject({
+      ...project,
+      completed_stage: "DONE",
+      narration: {
+        state: "RUNNING",
+        started_at: "2026-01-02T15:00:00Z",
+        error: null,
+        can_recover: true,
+        audio_url: null,
+      },
+    });
+
+    expect(screen.getByText(/narration.*interrupted|interrupted.*narration/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /recover narration/i })).toBeInTheDocument();
   });
 });
