@@ -35,6 +35,7 @@ CHARACTERS_SCHEMA = {
     "properties": {
         "characters": {
             "type": "array",
+            "minItems": 1,
             "maxItems": 2,
             "items": {
                 "type": "object",
@@ -63,6 +64,7 @@ CHAPTERS_SCHEMA = {
     "properties": {
         "chapters": {
             "type": "array",
+            "minItems": 1,
             "maxItems": 1,
             "items": {
                 "type": "object",
