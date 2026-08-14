@@ -39,6 +39,23 @@ CREATE TABLE IF NOT EXISTS projects (
 CREATE INDEX IF NOT EXISTS projects_user_created_idx
 ON projects(user_id, created_at DESC);
 
+CREATE TABLE IF NOT EXISTS pipeline_attempts (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    step TEXT NOT NULL
+        CHECK (step IN ('STYLE', 'CHARACTERS', 'PORTRAITS', 'CHAPTERS', 'ILLUSTRATIONS')),
+    attempt_number INTEGER NOT NULL CHECK (attempt_number > 0),
+    started_at TEXT NOT NULL,
+    ended_at TEXT,
+    outcome TEXT NOT NULL
+        CHECK (outcome IN ('RUNNING', 'SUCCEEDED', 'FAILED', 'INTERRUPTED')),
+    error TEXT,
+    UNIQUE(project_id, step, attempt_number)
+);
+
+CREATE INDEX IF NOT EXISTS pipeline_attempts_project_step_idx
+ON pipeline_attempts(project_id, step, attempt_number DESC);
+
 CREATE TABLE IF NOT EXISTS characters (
     id TEXT PRIMARY KEY,
     project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,

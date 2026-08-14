@@ -6,6 +6,7 @@ import type {
   Chapter,
   CompletedStage,
   ImageState,
+  PipelineAttempt,
   PipelineStep,
   Project,
   SampleBook,
@@ -487,6 +488,7 @@ function ProjectDetail({ project, token, loadProject }: { project: Project; toke
       <div className="detail-layout">
         <div className="detail-main">
           <ActionPanel project={project} style={style} onStyle={setStyle} busy={mutating} error={actionError} onRun={runStep} onRecover={recover} />
+          <AttemptHistory attempts={project.attempts ?? []} />
           {project.style && <section className="result-section style-result"><p className="section-kicker">Established art direction</p><h2>Style</h2><p>{project.style}</p></section>}
           {project.characters.length > 0 && <section className="result-section"><div className="section-heading"><div><p className="section-kicker">Cast</p><h2>Characters</h2></div><span>{project.characters.length} of 2 maximum</span></div><div className="character-grid">{project.characters.map((character) => <CharacterCard key={character.id} character={character} token={token} />)}</div></section>}
           {project.chapters.length > 0 && <section className="result-section"><div className="section-heading"><div><p className="section-kicker">Scene</p><h2>Chapter illustration</h2></div></div>{project.chapters.map((chapter) => <ChapterCard key={chapter.id} chapter={chapter} token={token} />)}</section>}
@@ -495,6 +497,53 @@ function ProjectDetail({ project, token, loadProject }: { project: Project; toke
       </div>
     </main>
   );
+}
+
+function AttemptHistory({ attempts }: { attempts: PipelineAttempt[] }) {
+  if (attempts.length === 0) return null;
+  return (
+    <section className="attempt-history" aria-label="Pipeline attempt history">
+      <p className="section-kicker">Execution history</p>
+      <div className="attempt-groups">
+        {STEPS.map((step) => {
+          const stepAttempts = attempts.filter((attempt) => attempt.step === step.key);
+          if (stepAttempts.length === 0) return null;
+          return (
+            <section className="attempt-group" key={step.key}>
+              <h2>{step.label} attempts</h2>
+              <ol>
+                {stepAttempts.map((attempt) => (
+                  <li className={`attempt-row ${attempt.outcome.toLowerCase()}`} key={attempt.id}>
+                    <div>
+                      <strong>Attempt {attempt.attempt_number} · {attemptOutcomeLabel(attempt.outcome)}</strong>
+                      <span>
+                        Started <time dateTime={attempt.started_at}>{formatAttemptTime(attempt.started_at)}</time>
+                        {attempt.ended_at && <> · Ended <time dateTime={attempt.ended_at}>{formatAttemptTime(attempt.ended_at)}</time></>}
+                      </span>
+                    </div>
+                    {attempt.error && <p>{attempt.error}</p>}
+                  </li>
+                ))}
+              </ol>
+            </section>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
+function attemptOutcomeLabel(outcome: PipelineAttempt["outcome"]) {
+  return outcome.charAt(0) + outcome.slice(1).toLowerCase();
+}
+
+function formatAttemptTime(value: string) {
+  return new Intl.DateTimeFormat(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  }).format(new Date(value));
 }
 
 function StatusPill({ project }: { project: Project }) {

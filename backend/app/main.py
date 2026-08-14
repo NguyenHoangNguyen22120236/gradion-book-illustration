@@ -29,6 +29,7 @@ from .pipeline import (
     can_recover_execution,
     chapter_dict,
     character_dict,
+    attempt_dict,
 )
 from .sample_books import SAMPLE_BOOKS, read_sample_book
 
@@ -123,6 +124,7 @@ def project_dict(
     book_text: str | None = None,
     characters: list[dict] | None = None,
     chapters: list[dict] | None = None,
+    attempts: list[dict] | None = None,
 ) -> dict:
     result = {
         key: row[key]
@@ -142,6 +144,7 @@ def project_dict(
     result["can_recover"] = can_recover_execution(row, process_instance_id)
     result["characters"] = characters or []
     result["chapters"] = chapters or []
+    result["attempts"] = attempts or []
     if book_text is not None:
         result["book_text"] = book_text
     return result
@@ -276,6 +279,17 @@ def create_app(
             ).fetchall()
         return [chapter_dict(row) for row in rows]
 
+    def read_attempts(project_id: str) -> list[dict]:
+        with database.connect() as connection:
+            rows = connection.execute(
+                """SELECT id, step, attempt_number, started_at, ended_at, outcome, error
+                   FROM pipeline_attempts
+                   WHERE project_id = ?
+                   ORDER BY started_at DESC, attempt_number DESC, id DESC""",
+                (project_id,),
+            ).fetchall()
+        return [attempt_dict(row) for row in rows]
+
     @application.post("/api/projects", status_code=status.HTTP_201_CREATED)
     def create_project(
         payload: ProjectRequest,
@@ -358,6 +372,7 @@ def create_app(
             read_book(row),
             read_characters(project_id),
             read_chapters(project_id),
+            read_attempts(project_id),
         )
 
     def stored_image_response(relative_path: str | None, label: str) -> FileResponse:

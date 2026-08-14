@@ -11,6 +11,7 @@ Backend tests cover:
 - initial state, strict five-step ordering, legal state transitions, invalid/repeated actions, failed-step retry, and preservation of completed results;
 - atomic SQLite step claims under concurrent requests, rejection of duplicates, and the rule that an old timestamp alone does not make same-process work recoverable;
 - process-owner restart recovery, ownership of recovery actions, and preservation of already-ready portrait items;
+- append-only pipeline attempt history for success, sanitized failure, manual retry, interrupted-owner recovery, per-step numbering, project/user isolation, duplicate-request prevention, and pre-bonus database migration;
 - local-only project creation, one-time book upload, separate persisted file and interaction state, user-provided/generated styles, and conversation chaining without resending the book;
 - adult-character filtering, the two-character cap, malformed structured-output failure without partial persistence, and safe retry;
 - per-item portrait progress, immediate file persistence, partial-failure preservation, retrying only failed portraits, duplicate portrait prevention, authenticated image serving, and schema migration;
@@ -26,6 +27,7 @@ Frontend component tests cover:
 - named running state, persisted failure and retry, backend-authorized recovery, and post-recovery refresh;
 - generated character prompts, all portrait item states, chapter/final-illustration rendering, and authenticated image loading;
 - polling while `RUNNING` and stopping after `IDLE` or `FAILED`.
+- compact per-step attempt history for successful, failed/retried, running, and interrupted executions while preserving existing retry/recovery controls.
 
 ## Deliberately not automated
 
@@ -56,6 +58,7 @@ These checks were manual browser verification and are not part of the automated 
 ## Real test report
 
 Run on 2026-08-14 through Git Bash on Windows. The command completed with exit code 0. ANSI color codes are omitted below; all result text and timings are from the real run.
+The local `.venv` launcher referenced a removed Python installation, so this run supplied the installed Python 3.12 executable through `BACKEND_PYTHON` and reused the environment's existing packages through `PYTHONPATH`; `test.sh` itself was unchanged.
 
 ```text
 $ ./test.sh
@@ -65,31 +68,32 @@ rootdir: C:\GitHub\gradion-book-illustration\backend
 configfile: pytest.ini
 testpaths: tests
 plugins: anyio-4.14.2
-collected 53 items
+collected 60 items
 
-tests\test_chapters_illustrations.py .........                           [ 16%]
-tests\test_gemini_pipeline.py ..........                                 [ 35%]
-tests\test_health.py .                                                   [ 37%]
-tests\test_pipeline.py ...........                                       [ 58%]
-tests\test_portraits.py .........                                        [ 75%]
-tests\test_projects.py .........                                         [ 92%]
+tests\test_attempt_history.py .......                                    [ 11%]
+tests\test_chapters_illustrations.py .........                           [ 26%]
+tests\test_gemini_pipeline.py ..........                                 [ 43%]
+tests\test_health.py .                                                   [ 45%]
+tests\test_pipeline.py ...........                                       [ 63%]
+tests\test_portraits.py .........                                        [ 78%]
+tests\test_projects.py .........                                         [ 93%]
 tests\test_session.py ....                                               [100%]
 
-============================= 53 passed in 6.45s ==============================
+============================= 60 passed in 7.92s ==============================
 
 > gradion-book-illustration-frontend@0.1.0 test
 > vitest run
 
  RUN  v3.2.7 C:/GitHub/gradion-book-illustration/frontend
 
- ✓ src/App.test.tsx (19 tests) 1312ms
+ ✓ src/App.test.tsx (21 tests) 3383ms
 
  Test Files  1 passed (1)
-      Tests  19 passed (19)
-   Start at  12:54:35
-   Duration  3.83s (transform 206ms, setup 170ms, collect 477ms, tests 1.31s, environment 1.09s, prepare 282ms)
+      Tests  21 passed (21)
+   Start at  13:35:18
+   Duration  6.04s (transform 321ms, setup 171ms, collect 604ms, tests 3.38s, environment 1.13s, prepare 299ms)
 ```
 
 The requested frontend production check also completed successfully on
 2026-08-14: `npm run build` ran `tsc -b && vite build`, transformed 30 modules,
-and completed the Vite build in 1.45 seconds.
+and completed the Vite build in 996ms.

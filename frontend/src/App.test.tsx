@@ -26,6 +26,7 @@ const project = {
   style: null,
   characters: [],
   chapters: [],
+  attempts: [],
   book_text: "Once beside the river, Mole opened the door to spring.",
 };
 
@@ -334,6 +335,40 @@ describe("App", () => {
         expect.objectContaining({ method: "POST" }),
       ),
     );
+  });
+
+  it("renders compact successful and failed retry attempt history by step", async () => {
+    await openProject({
+      ...project,
+      completed_stage: "CHARACTERS_GENERATED",
+      attempts: [
+        { id: "style-1", step: "STYLE", attempt_number: 1, started_at: "2026-01-02T14:20:00Z", ended_at: "2026-01-02T14:21:00Z", outcome: "SUCCEEDED", error: null },
+        { id: "characters-1", step: "CHARACTERS", attempt_number: 1, started_at: "2026-01-02T14:29:00Z", ended_at: "2026-01-02T14:30:00Z", outcome: "FAILED", error: "Gemini request failed" },
+        { id: "characters-2", step: "CHARACTERS", attempt_number: 2, started_at: "2026-01-02T14:31:00Z", ended_at: "2026-01-02T14:32:00Z", outcome: "SUCCEEDED", error: null },
+      ],
+    });
+
+    expect(screen.getByRole("region", { name: /pipeline attempt history/i })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Style attempts" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Characters attempts" })).toBeInTheDocument();
+    expect(screen.getByText(/attempt 2.*succeeded/i)).toBeInTheDocument();
+    expect(screen.getByText(/attempt 1.*failed/i)).toBeInTheDocument();
+    expect(screen.getByText("Gemini request failed")).toBeInTheDocument();
+  });
+
+  it("shows interrupted history without replacing the recovery control", async () => {
+    await openProject({
+      ...project,
+      step_state: "RUNNING",
+      active_step: "STYLE",
+      can_recover: true,
+      attempts: [
+        { id: "style-1", step: "STYLE", attempt_number: 1, started_at: "2026-01-02T14:20:00Z", ended_at: null, outcome: "RUNNING", error: null },
+      ],
+    });
+
+    expect(screen.getByText(/attempt 1.*running/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /recover style/i })).toBeInTheDocument();
   });
 
   it("offers backend-authorized recovery for an interrupted run", async () => {
