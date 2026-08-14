@@ -19,13 +19,13 @@ from .gemini import (
     GoogleGenAIClient,
 )
 from .pipeline import (
-    FakePipelineExecutor,
     InvalidTransition,
     PipelineExecutor,
     PipelineStateMachine,
     PipelineStep,
     ProjectNotFound,
     StepExecutionFailed,
+    UnconfiguredPipelineExecutor,
     can_recover_execution,
     chapter_dict,
     character_dict,
@@ -156,7 +156,7 @@ def create_app(
                 GoogleGenAIClient(settings=gemini_settings), database, resolved_data
             )
             if gemini_settings
-            else FakePipelineExecutor()
+            else UnconfiguredPipelineExecutor()
         )
     state_machine = PipelineStateMachine(
         database, resolved_executor, backend_process_id

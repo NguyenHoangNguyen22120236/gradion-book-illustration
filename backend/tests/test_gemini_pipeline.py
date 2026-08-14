@@ -3,6 +3,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
 from fastapi.testclient import TestClient
 
 from app.main import create_app
@@ -15,6 +16,7 @@ class RecordingGeminiClient:
         self.character_calls: list[str] = []
         self.fail_style_calls = 0
         self.fail_character_calls = 0
+        self.style_failure = RuntimeError("Gemini style interaction failed")
         self.generated_style = "Luminous watercolor with fine ink outlines"
         self.character_output: Any = {
             "characters": [
@@ -43,7 +45,7 @@ class RecordingGeminiClient:
         )
         if self.fail_style_calls:
             self.fail_style_calls -= 1
-            raise RuntimeError("Gemini style interaction failed")
+            raise self.style_failure
         return SimpleNamespace(id="style-interaction-1", output_text=self.generated_style)
 
     def create_characters_interaction(
@@ -96,6 +98,30 @@ def test_project_creation_is_local_only(storage: tuple[Path, Path]) -> None:
     assert gemini.character_calls == []
 
 
+def test_missing_gemini_configuration_fails_the_user_started_step(
+    storage: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    database_path, data_dir = storage
+
+    with TestClient(create_app(database_path, data_dir)) as client:
+        headers = sign_in(client)
+        project = create_project(client, headers)
+
+        failed = client.post(
+            f"/api/projects/{project['id']}/steps/style", headers=headers
+        )
+
+    assert failed.status_code == 502
+    state = failed.json()["project"]
+    assert state["completed_stage"] == "CREATED"
+    assert state["step_state"] == "FAILED"
+    assert state["active_step"] == "STYLE"
+    assert state["step_error"] == (
+        "Gemini is not configured. Set GEMINI_API_KEY and restart the backend."
+    )
+
+
 def test_style_upload_is_persisted_before_interaction_and_reused_on_retry(
     storage: tuple[Path, Path],
 ) -> None:
@@ -128,6 +154,38 @@ def test_style_upload_is_persisted_before_interaction_and_reused_on_retry(
     assert retried.status_code == 200
     assert len(gemini.upload_calls) == 1
     assert len(gemini.style_calls) == 2
+
+
+def test_unexpected_provider_error_is_persisted_without_leaking_raw_details(
+    storage: tuple[Path, Path],
+) -> None:
+    gemini = RecordingGeminiClient()
+    gemini.fail_style_calls = 1
+    secret = "AIza-development-secret"
+    gemini.style_failure = RuntimeError(
+        f"upstream response included key={secret}: " + "x" * 5_000
+    )
+    database_path, data_dir = storage
+
+    with TestClient(
+        create_app(database_path, data_dir, gemini_client=gemini)
+    ) as client:
+        headers = sign_in(client)
+        project = create_project(client, headers)
+
+        failed = client.post(
+            f"/api/projects/{project['id']}/steps/style", headers=headers
+        )
+        detail = client.get(
+            f"/api/projects/{project['id']}", headers=headers
+        ).json()
+
+    assert failed.status_code == 502
+    assert detail["step_state"] == "FAILED"
+    assert detail["active_step"] == "STYLE"
+    assert detail["step_error"] == "Gemini style request failed"
+    assert secret not in failed.text
+    assert len(failed.text) < 1_000
 
 
 def test_generated_style_and_interaction_id_are_persisted(

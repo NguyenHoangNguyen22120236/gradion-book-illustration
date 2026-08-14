@@ -154,6 +154,52 @@ describe("App", () => {
     expect(screen.getByText("A new story beside the river.")).toBeInTheDocument();
   });
 
+  it("creates a project from a .txt file and sends its filename", async () => {
+    const created = {
+      ...project,
+      title: "Uploaded River Story",
+      book_text: "Text loaded from the selected file.",
+    };
+    let wasCreated = false;
+    mockApi({
+      handler: (path, init) => {
+        if (path === "/api/projects" && init.method === "POST") {
+          wasCreated = true;
+          expect(JSON.parse(String(init.body))).toMatchObject({
+            title: "Uploaded River Story",
+            book_text: "Text loaded from the selected file.",
+            source_filename: "river.txt",
+          });
+          return response(created, 201);
+        }
+        if (wasCreated && path === `/api/projects/${project.id}`) return response(created);
+        return undefined as never;
+      },
+    });
+    render(<App />);
+    await screen.findByRole("heading", { name: /no projects yet/i });
+
+    fireEvent.click(screen.getByRole("button", { name: /new project/i }));
+    await screen.findByRole("heading", { name: /add a book/i });
+    fireEvent.change(screen.getByLabelText(/project title/i), {
+      target: { value: "Uploaded River Story" },
+    });
+    const file = new File(["Text loaded from the selected file."], "river.txt", {
+      type: "text/plain",
+    });
+    Object.defineProperty(file, "text", {
+      value: vi.fn().mockResolvedValue("Text loaded from the selected file."),
+    });
+    fireEvent.change(screen.getByLabelText(/choose a \.txt file/i), {
+      target: { files: [file] },
+    });
+
+    expect(await screen.findByDisplayValue("Text loaded from the selected file.")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /^create project/i }));
+
+    expect(await screen.findByRole("heading", { name: "Uploaded River Story" })).toBeInTheDocument();
+  });
+
   it("shows exactly the next legal pipeline action on project detail", async () => {
     await openProject({ ...project, completed_stage: "STYLE_SET", style: "Soft watercolor" });
 

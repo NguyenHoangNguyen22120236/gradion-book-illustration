@@ -47,20 +47,20 @@ class PipelineExecutor(Protocol):
     ) -> dict[str, Any]: ...
 
 
-class FakePipelineExecutor:
-    """Deterministic Stage 3 substitute for the future Gemini executor."""
+class PipelineExecutionError(Exception):
+    """An expected external-provider failure reported by an executor."""
+
+
+class UnconfiguredPipelineExecutor:
+    """Keeps local project work available while preventing fake pipeline success."""
 
     def execute(
         self, step: str, project: Mapping[str, Any]
-    ) -> dict[str, str]:
-        del project
-        if step == PipelineStep.STYLE:
-            return {"style": "Deterministic watercolor storybook style"}
-        return {}
-
-
-class PipelineExecutionError(Exception):
-    """An expected external-provider failure reported by an executor."""
+    ) -> dict[str, Any]:
+        del step, project
+        raise PipelineExecutionError(
+            "Gemini is not configured. Set GEMINI_API_KEY and restart the backend."
+        )
 
 
 class InvalidTransition(Exception):

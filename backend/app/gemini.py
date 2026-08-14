@@ -360,7 +360,9 @@ class GeminiPipelineExecutor:
         except PipelineExecutionError:
             raise
         except Exception as error:
-            raise PipelineExecutionError(f"Gemini {step.lower()} failed: {error}") from error
+            raise PipelineExecutionError(
+                f"Gemini {step.lower()} request failed"
+            ) from error
 
     def _execute_style(self, project: dict[str, Any]) -> dict[str, Any]:
         file_uri = project.get("gemini_file_uri")

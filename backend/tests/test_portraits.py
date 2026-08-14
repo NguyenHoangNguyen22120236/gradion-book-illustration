@@ -325,6 +325,76 @@ def test_concurrent_portrait_requests_do_not_duplicate_image_calls(
     assert len(gemini.portrait_calls) == 1
 
 
+def test_interrupted_portrait_recovery_preserves_ready_items_and_fails_only_in_flight_item(
+    storage: tuple[Path, Path],
+) -> None:
+    gemini = PortraitGeminiClient()
+    database_path, data_dir = storage
+
+    with TestClient(
+        create_app(
+            database_path,
+            data_dir,
+            gemini_client=gemini,
+            process_instance_id="process-b",
+        )
+    ) as client:
+        headers = sign_in(client)
+        project = create_project(client, headers)
+        prepare_characters(client, headers, project["id"])
+        characters = client.get(
+            f"/api/projects/{project['id']}", headers=headers
+        ).json()["characters"]
+        ready_relative_path = (
+            Path("images")
+            / project["id"]
+            / "characters"
+            / f"{characters[0]['id']}.png"
+        )
+        ready_path = data_dir / ready_relative_path
+        ready_path.parent.mkdir(parents=True, exist_ok=True)
+        ready_path.write_bytes(PNG_BYTES)
+
+        with client.app.state.database.connect() as connection:
+            connection.execute(
+                """UPDATE projects
+                   SET step_state = 'RUNNING', active_step = 'PORTRAITS',
+                       step_started_at = '2026-01-01T00:00:00+00:00',
+                       execution_owner = 'process-a'
+                   WHERE id = ?""",
+                (project["id"],),
+            )
+            connection.execute(
+                """UPDATE characters
+                   SET image_state = 'READY', portrait_path = ?
+                   WHERE id = ?""",
+                (ready_relative_path.as_posix(), characters[0]["id"]),
+            )
+            connection.execute(
+                "UPDATE characters SET image_state = 'GENERATING' WHERE id = ?",
+                (characters[1]["id"],),
+            )
+
+        interrupted = client.get(
+            f"/api/projects/{project['id']}", headers=headers
+        ).json()
+        recovered = client.post(
+            f"/api/projects/{project['id']}/recover", headers=headers
+        )
+
+    assert interrupted["can_recover"] is True
+    assert recovered.status_code == 200
+    state = recovered.json()
+    assert state["step_state"] == "FAILED"
+    assert state["active_step"] == "PORTRAITS"
+    assert [item["image_state"] for item in state["characters"]] == [
+        "READY",
+        "FAILED",
+    ]
+    assert state["characters"][0]["portrait_url"]
+    assert "backend restart" in state["characters"][1]["image_error"]
+
+
 def test_portrait_image_serving_is_scoped_to_project_owner(
     storage: tuple[Path, Path],
 ) -> None:

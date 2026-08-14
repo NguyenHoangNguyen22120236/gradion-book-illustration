@@ -351,6 +351,41 @@ def test_illustration_serving_is_scoped_to_project_owner(
     assert forbidden.status_code == 404
 
 
+def test_completed_pipeline_and_generated_files_survive_backend_restart(
+    storage: tuple[Path, Path],
+) -> None:
+    gemini = StageSevenGeminiClient()
+    database_path, data_dir = storage
+
+    with TestClient(create_app(database_path, data_dir, gemini_client=gemini)) as client:
+        headers = sign_in(client)
+        project = create_project(client, headers)
+        prepare_chapter(client, headers, project["id"])
+        assert execute_step(
+            client, headers, project["id"], "ILLUSTRATIONS"
+        ).status_code == 200
+
+    with TestClient(
+        create_app(database_path, data_dir, gemini_client=gemini)
+    ) as restarted_client:
+        restarted_headers = sign_in(restarted_client)
+        detail = restarted_client.get(
+            f"/api/projects/{project['id']}", headers=restarted_headers
+        ).json()
+        portrait = restarted_client.get(
+            detail["characters"][0]["portrait_url"], headers=restarted_headers
+        )
+        illustration = restarted_client.get(
+            detail["chapters"][0]["illustration_url"], headers=restarted_headers
+        )
+
+    assert detail["completed_stage"] == "DONE"
+    assert all(item["image_state"] == "READY" for item in detail["characters"])
+    assert detail["chapters"][0]["image_state"] == "READY"
+    assert portrait.content == PORTRAIT_BYTES
+    assert illustration.content == ILLUSTRATION_BYTES
+
+
 def test_google_client_chains_chapters_and_sends_inline_portrait_references() -> None:
     interactions = SimpleNamespace(calls=[])
 
