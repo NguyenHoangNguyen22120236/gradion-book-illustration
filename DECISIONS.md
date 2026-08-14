@@ -2,7 +2,11 @@
 
 ## 1. Keep the stack and storage local and transactional
 
-I chose React with TypeScript and Vite, FastAPI with Python, SQLite for metadata, and the local filesystem for books and images. The AI planning work accepted that boundary; there was no push-back to resolve on this choice. SQLite gives the pipeline a real transactional claim without adding an external service, while files are the simplest fit for durable local media. The cost is that this is deliberately a single-machine application rather than a horizontally scalable deployment. The repository defaults to the configurable `gemini-3.5-flash` text model and `gemini-3.1-flash-image` image model, so model drift can be handled through environment variables.
+I chose React with TypeScript and Vite for the frontend, FastAPI with Python for the backend, SQLite for users, sessions, pipeline state, generated-item metadata, and attempt history, and the local filesystem for source books, generated images, and optional narration audio. This matches the assessment’s local-development scope while keeping the backend authoritative and durable across browser and backend restarts.
+
+SQLite provides the transaction and conditional-update semantics needed to claim pipeline steps atomically, preventing concurrent requests from producing duplicate Gemini calls without introducing Redis, a queue, or another external service. Filesystem storage is the simplest fit for locally generated media. Authenticated SSE delivers persisted project snapshots to the frontend, while REST remains the initial-load and manual-refresh fallback.
+
+The tradeoff is that the application is intentionally designed for a single machine rather than horizontal scaling. Moving to multiple backend instances would require shared media storage and a stronger distributed execution-ownership mechanism. The current Gemini text, image, and narration model IDs are configurable through environment variables—defaulting to `gemini-3.5-flash`, `gemini-3.1-flash-image`, and `gemini-3.1-flash-tts-preview`—so they can be changed without modifying application code.
 
 ## 2. Overrode the AI
 
@@ -52,4 +56,19 @@ I removed the automatic post-step `GET` and made SSE the authoritative update pa
 
 ## 3. If I had one more day
 
-Supplement later.
+I would spend the additional day on browser-level end-to-end and failure-injection testing rather than adding another feature. The current backend and component tests cover the state machine, concurrency protection, retries, recovery, SSE updates, generated media, and narration in isolation, but a small Playwright suite would provide stronger confidence in the complete user journey.
+
+I would cover identity creation, project creation, all five required pipeline steps, refresh and SSE reconnection while a step is running, a failed-step retry, recovery after a simulated backend restart, and authenticated media playback. I would also perform and document one controlled smoke test against the real Gemini service, while keeping normal automated tests mocked to avoid consuming quota.
+
+This would not change the architecture. It would reduce the remaining risk at the boundaries between the browser, long-running requests, persisted state, and the external Gemini API.
+
+
+## 4. Bonus features
+
+In addition to the required five-step pipeline, this submission includes:
+
+- CI through GitHub Actions.
+- Three bundled public-domain sample books.
+- Persisted pipeline attempt and retry history.
+- Gemini TTS narration with authenticated audio playback.
+- Authenticated Server-Sent Events for real-time project updates.
