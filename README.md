@@ -57,6 +57,7 @@ Run both automated suites with one command:
 ```
 
 See `TESTING.md` for coverage, deliberate gaps, and the latest real test report.
+GitHub Actions also runs this test harness and the frontend production build on every push and pull request.
 
 ## Architecture and pipeline
 
