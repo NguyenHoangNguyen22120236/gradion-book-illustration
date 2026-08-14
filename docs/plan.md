@@ -769,6 +769,8 @@ Tasks:
 
 #### Bonus 2 — Sample public-domain books
 
+Status: Complete (2026-08-14).
+
 Goal:
 Let users create a project from a small curated set of public-domain books in
 addition to uploading or pasting text.

@@ -116,6 +116,18 @@ textarea { resize: vertical; line-height: 1.65; }
 .narrow-page h1 { margin-bottom: .7rem; }
 .project-form { margin-top: 2.5rem; padding: clamp(1.4rem, 4vw, 2.25rem); border: 1px solid var(--line); border-radius: 16px; background: #fff; box-shadow: 0 8px 30px rgba(48, 36, 27, .04); }
 .upload-block { display: grid; gap: 1rem; }
+.sample-picker { display: grid; gap: .75rem; margin: 0; padding: 0; border: 0; }
+.sample-picker legend { margin-bottom: .65rem; font-size: .72rem; font-weight: 800; }
+.sample-options { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .7rem; }
+.sample-option { display: flex; align-items: flex-start; gap: .65rem; padding: .85rem; border: 1px solid var(--line); border-radius: 10px; background: #fff; cursor: pointer; }
+.sample-option:has(input:checked) { border-color: var(--orange); box-shadow: 0 0 0 1px var(--orange); background: var(--orange-soft); }
+.sample-option input { margin-top: .18rem; accent-color: var(--orange); }
+.sample-option span { display: grid; gap: .25rem; }
+.sample-option strong { font-size: .75rem; line-height: 1.35; }
+.sample-option small { color: var(--muted); font-size: .65rem; }
+.text-button { justify-self: start; padding: 0; border: 0; color: var(--orange-dark); background: transparent; font: inherit; font-size: .7rem; font-weight: 800; cursor: pointer; }
+.source-disabled { opacity: .55; }
+.source-disabled .file-picker { cursor: not-allowed; }
 .file-picker { position: relative; display: grid; place-items: center; padding: 1.6rem; border: 1.5px dashed #bdb4a9; border-radius: 12px; background: var(--paper); text-align: center; cursor: pointer; }
 .file-picker:hover { border-color: var(--orange); }
 .file-picker input { position: absolute; width: 1px; height: 1px; opacity: 0; }
@@ -210,6 +222,7 @@ footer i { width: 1px; height: 12px; background: var(--line); }
   .step-number { flex-basis: 30px; height: 30px; }
   .stepper li:not(:last-child)::after { top: 15px; left: 32px; }
   .character-grid { grid-template-columns: 1fr; }
+  .sample-options { grid-template-columns: 1fr; }
   .running-panel, .complete-panel { align-items: flex-start; }
 }
 

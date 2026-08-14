@@ -1,3 +1,4 @@
+import sqlite3
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -94,3 +95,143 @@ def test_user_project_and_book_survive_app_restart(
     assert detail.status_code == 200
     assert detail.json()["title"] == "Persistent story"
     assert detail.json()["book_text"] == "This text must survive a process restart."
+
+
+class RecordingExecutor:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, dict]] = []
+
+    def execute(self, step: str, project: dict) -> dict:
+        self.calls.append((step, project))
+        return {}
+
+
+def test_list_sample_books_returns_exact_frontend_catalogue(client: TestClient) -> None:
+    headers = sign_in(client, "Mira", "mira@example.com")
+
+    response = client.get("/api/sample-books", headers=headers)
+
+    assert response.status_code == 200
+    assert response.json() == [
+        {
+            "id": "alice-in-wonderland",
+            "title": "Alice’s Adventures in Wonderland",
+            "author": "Lewis Carroll",
+        },
+        {
+            "id": "wizard-of-oz",
+            "title": "The Wonderful Wizard of Oz",
+            "author": "L. Frank Baum",
+        },
+        {
+            "id": "wind-in-the-willows",
+            "title": "The Wind in the Willows",
+            "author": "Kenneth Grahame",
+        },
+    ]
+    assert all("book_text" not in sample for sample in response.json())
+
+
+def test_create_project_from_sample_reuses_local_persistence_without_gemini(
+    storage: tuple[Path, Path],
+) -> None:
+    database_path, data_dir = storage
+    executor = RecordingExecutor()
+    with TestClient(
+        create_app(database_path, data_dir, pipeline_executor=executor)
+    ) as client:
+        headers = sign_in(client, "Mira", "mira@example.com")
+
+        response = client.post(
+            "/api/projects",
+            headers=headers,
+            json={
+                "title": "My Alice Project",
+                "sample_book_id": "alice-in-wonderland",
+            },
+        )
+
+    assert response.status_code == 201
+    project = response.json()
+    assert project["completed_stage"] == "CREATED"
+    assert project["step_state"] == "IDLE"
+    assert project["active_step"] is None
+    assert "Alice’s Adventures in Wonderland" in project["book_text"]
+    assert (data_dir / "books" / f"{project['id']}.txt").read_text(
+        encoding="utf-8"
+    ) == project["book_text"]
+    with sqlite3.connect(database_path) as connection:
+        persisted = connection.execute(
+            "SELECT gemini_file_uri, latest_interaction_id FROM projects WHERE id = ?",
+            (project["id"],),
+        ).fetchone()
+    assert persisted == (None, None)
+    assert executor.calls == []
+
+
+def test_invalid_sample_id_creates_no_project_or_book_and_does_not_call_gemini(
+    storage: tuple[Path, Path],
+) -> None:
+    database_path, data_dir = storage
+    executor = RecordingExecutor()
+    with TestClient(
+        create_app(database_path, data_dir, pipeline_executor=executor)
+    ) as client:
+        headers = sign_in(client, "Mira", "mira@example.com")
+        response = client.post(
+            "/api/projects",
+            headers=headers,
+            json={"title": "Unknown sample", "sample_book_id": "../../secrets"},
+        )
+
+    assert response.status_code == 422
+    with sqlite3.connect(database_path) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM projects").fetchone()[0] == 0
+    assert list((data_dir / "books").iterdir()) == []
+    assert executor.calls == []
+
+
+def test_project_creation_rejects_conflicting_or_missing_book_sources(
+    client: TestClient,
+) -> None:
+    headers = sign_in(client, "Mira", "mira@example.com")
+
+    conflicting = client.post(
+        "/api/projects",
+        headers=headers,
+        json={
+            "title": "Ambiguous",
+            "book_text": "Pasted text",
+            "sample_book_id": "wizard-of-oz",
+        },
+    )
+    missing = client.post(
+        "/api/projects", headers=headers, json={"title": "No source"}
+    )
+    filename_only = client.post(
+        "/api/projects",
+        headers=headers,
+        json={"title": "Filename only", "source_filename": "book.txt"},
+    )
+
+    assert conflicting.status_code == 422
+    assert missing.status_code == 422
+    assert filename_only.status_code == 422
+    assert client.get("/api/projects", headers=headers).json() == []
+
+
+def test_sample_project_uses_normal_user_ownership(client: TestClient) -> None:
+    mira = sign_in(client, "Mira", "mira@example.com")
+    theo = sign_in(client, "Theo", "theo@example.com")
+    project = client.post(
+        "/api/projects",
+        headers=mira,
+        json={
+            "title": "Mira's Oz",
+            "sample_book_id": "wizard-of-oz",
+        },
+    ).json()
+
+    assert client.get(f"/api/projects/{project['id']}", headers=mira).status_code == 200
+    assert client.get(f"/api/projects/{project['id']}", headers=theo).status_code == 404
+    assert client.get("/api/projects", headers=theo).json() == []

@@ -8,6 +8,7 @@ import type {
   ImageState,
   PipelineStep,
   Project,
+  SampleBook,
   User,
 } from "./types";
 import "./styles.css";
@@ -311,8 +312,24 @@ function NewProject({ token, onCancel, onCreated }: { token: string; onCancel: (
   const [title, setTitle] = useState("");
   const [bookText, setBookText] = useState("");
   const [sourceFilename, setSourceFilename] = useState<string | null>(null);
+  const [sampleBooks, setSampleBooks] = useState<SampleBook[]>([]);
+  const [selectedSampleId, setSelectedSampleId] = useState("");
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    void api<SampleBook[]>("/sample-books", {}, token)
+      .then((samples) => {
+        if (!cancelled) setSampleBooks(samples);
+      })
+      .catch((reason: Error) => {
+        if (!cancelled) setError(reason.message);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [token]);
 
   const chooseFile = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
@@ -336,12 +353,15 @@ function NewProject({ token, onCancel, onCreated }: { token: string; onCancel: (
     event.preventDefault();
     setError("");
     if (!title.trim()) return setError("Project title is required.");
-    if (!bookText.trim()) return setError("Book text is required. Paste text or choose a .txt file.");
+    if (!selectedSampleId && !bookText.trim()) return setError("Choose a sample book, paste text, or choose a .txt file.");
     setSubmitting(true);
     try {
+      const payload = selectedSampleId
+        ? { title: title.trim(), sample_book_id: selectedSampleId }
+        : { title: title.trim(), book_text: bookText, source_filename: sourceFilename };
       const created = await api<Project>("/projects", {
         method: "POST",
-        body: JSON.stringify({ title: title.trim(), book_text: bookText, source_filename: sourceFilename }),
+        body: JSON.stringify(payload),
       }, token);
       onCreated(created);
     } catch (reason) {
@@ -359,15 +379,39 @@ function NewProject({ token, onCancel, onCreated }: { token: string; onCancel: (
       <p className="page-intro">Creating a project saves its text locally. Gemini is not called until you explicitly start Style.</p>
       <form className="project-form" onSubmit={submit} noValidate>
         <Field label="Project title" required><input value={title} onChange={(event) => setTitle(event.target.value)} placeholder="The Wind in the Willows" /></Field>
-        <div className="upload-block">
-          <label className="file-picker">
+        <fieldset className="sample-picker">
+          <legend>Choose a sample book</legend>
+          <div className="sample-options">
+            {sampleBooks.map((sample) => (
+              <label className="sample-option" key={sample.id}>
+                <input
+                  type="radio"
+                  name="sample-book"
+                  value={sample.id}
+                  checked={selectedSampleId === sample.id}
+                  onChange={() => {
+                    setSelectedSampleId(sample.id);
+                    setBookText("");
+                    setSourceFilename(null);
+                    setError("");
+                  }}
+                />
+                <span><strong>{sample.title}</strong><small>{sample.author}</small></span>
+              </label>
+            ))}
+          </div>
+          {selectedSampleId && <button type="button" className="text-button" onClick={() => setSelectedSampleId("")}>Clear sample selection</button>}
+        </fieldset>
+        <span className="or"><i />or upload a .txt file<i /></span>
+        <div className={`upload-block ${selectedSampleId ? "source-disabled" : ""}`}>
+          <label className="file-picker" aria-disabled={Boolean(selectedSampleId)}>
             <span className="upload-icon" aria-hidden="true">↑</span>
             <strong>{sourceFilename ?? "Choose a .txt file"}</strong>
             <small>Plain text only</small>
-            <input type="file" accept=".txt,text/plain" onChange={chooseFile} />
+            <input type="file" accept=".txt,text/plain" onChange={chooseFile} disabled={Boolean(selectedSampleId)} />
           </label>
           <span className="or"><i />or paste text<i /></span>
-          <Field label="Book text" required><textarea rows={14} value={bookText} onChange={(event) => { setBookText(event.target.value); if (sourceFilename) setSourceFilename(null); }} placeholder="Once upon a time…" /></Field>
+          <Field label="Book text" required><textarea rows={14} value={bookText} disabled={Boolean(selectedSampleId)} onChange={(event) => { setBookText(event.target.value); if (sourceFilename) setSourceFilename(null); }} placeholder="Once upon a time…" /></Field>
         </div>
         {error && <p className="form-error" role="alert">{error}</p>}
         <button className="primary wide" disabled={submitting}>{submitting ? "Creating project…" : "Create project"}<span aria-hidden="true">→</span></button>
