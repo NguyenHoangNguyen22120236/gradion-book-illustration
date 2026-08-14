@@ -745,6 +745,125 @@ Suggested commit:
 docs: finalize assessment documentation
 ```
 
+### Optional bonus stages — only after Stage 10
+
+These stages are optional and must not delay or destabilize the required
+five-step pipeline. Begin them only after the definition of done is satisfied
+and the full required test suite passes.
+
+Implement optional bonuses in this order, from lowest risk to highest risk:
+
+#### Bonus 1 — CI pipeline
+
+Goal:
+Run the existing backend and frontend tests automatically on every push and
+pull request.
+
+Tasks:
+
+- add a GitHub Actions workflow,
+- install the pinned Python and Node dependencies,
+- run the existing one-command test script,
+- run the frontend production build,
+- keep Gemini mocked and require no Gemini secret in CI.
+
+#### Bonus 2 — Sample public-domain books
+
+Goal:
+Let users create a project from a small curated set of public-domain books in
+addition to uploading or pasting text.
+
+Tasks:
+
+- include a small, bounded set of local `.txt` samples,
+- record title, author, source, and public-domain attribution,
+- add a sample selector to the new-project UI,
+- send the selected sample through the existing project-creation path,
+- keep project creation local-only and do not call Gemini automatically.
+
+#### Bonus 3 — Retry and attempt history
+
+Goal:
+Make prior execution attempts visible for each pipeline step without changing
+the existing manual-retry rules.
+
+Tasks:
+
+- add an append-only persisted attempt record,
+- record step, attempt number, start/end timestamps, outcome, and sanitized
+  error information,
+- preserve interrupted-attempt information during recovery,
+- expose attempt history through the project API,
+- show a compact history under each step,
+- test success, failure, retry, interruption, and duplicate-request behavior.
+
+Attempt history is observability only. It must not introduce automatic retries
+or weaken atomic step claiming.
+
+#### Bonus 4 — More characters or chapters
+
+Goal:
+Increase the existing limits while keeping both dimensions explicitly bounded.
+
+This bonus requires separate approval before implementation because the current
+repository contract defines maximums of 2 adult characters and 1 chapter.
+
+Tasks after approval:
+
+- choose and document the new limits,
+- update `AGENTS.md`, schemas, validation, prompts, tests, and documentation,
+- migrate the SQLite `sort_order` constraints safely,
+- confirm the frontend remains usable with the larger result sets,
+- document the increased Gemini cost and runtime.
+
+Do not loosen either cap through frontend-only validation.
+
+#### Bonus 5 — One later notebook section
+
+Goal:
+Implement exactly one later notebook feature after verifying its mechanics in
+the source notebook and current official API documentation.
+
+Prefer TTS narration as the smallest extension. Lyria background music or Veo
+chapter animation may be chosen instead with an explicit scope decision.
+
+Tasks:
+
+- add a user-triggered action after the required illustration pipeline,
+- persist running, failed, interrupted, and completed state,
+- store generated audio or video on the local filesystem,
+- provide authenticated media serving and an accessible player,
+- preserve completed required outputs when the bonus generation fails,
+- mock the provider in automated tests and never auto-retry it.
+
+#### Bonus 6 — Real-time step updates
+
+Goal:
+Replace frontend polling with server-pushed progress only after the polling
+implementation is stable.
+
+Prefer SSE over WebSocket unless bidirectional messaging becomes necessary.
+
+Tasks:
+
+- define authentication for long-lived connections,
+- stream authoritative persisted state or state-change events,
+- handle reconnects, duplicate events, backend restarts, and multiple tabs,
+- retain a safe refresh/fallback path,
+- add frontend and backend tests for connection and recovery behavior,
+- remove polling only after feature parity is verified.
+
+Suggested bonus progression:
+
+```text
+CI
+  → sample public-domain books
+  → retry/attempt history
+  → optionally increase bounded caps
+  → one later notebook section (prefer TTS)
+  → SSE real-time updates
+```
+
 ---
 
 ## 10. AI workflow
