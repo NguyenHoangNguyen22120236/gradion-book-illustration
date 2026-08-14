@@ -8,6 +8,7 @@ from typing import Any, Protocol
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from .database import Database
+from .events import ProjectChangeNotifier, ignore_project_change
 from .pipeline import PipelineExecutionError, PipelineStep
 
 
@@ -390,11 +391,16 @@ class GeminiPipelineExecutor:
     """Real executor for the five-step book illustration pipeline."""
 
     def __init__(
-        self, client: GeminiClient, database: Database, data_dir: Path
+        self,
+        client: GeminiClient,
+        database: Database,
+        data_dir: Path,
+        on_project_change: ProjectChangeNotifier = ignore_project_change,
     ) -> None:
         self.client = client
         self.database = database
         self.data_dir = data_dir
+        self.on_project_change = on_project_change
 
     def execute(self, step: str, project: dict[str, Any]) -> dict[str, Any]:
         if step not in (
@@ -491,7 +497,7 @@ class GeminiPipelineExecutor:
         for character in characters:
             if self._portrait_is_available(character):
                 continue
-            self._mark_portrait_generating(character["id"])
+            self._mark_portrait_generating(character["id"], project["id"])
             try:
                 prompt = self._portrait_prompt(
                     character["prompt"], project.get("style")
@@ -507,6 +513,7 @@ class GeminiPipelineExecutor:
                            WHERE id = ? AND project_id = ?""",
                         (relative_path, character["id"], project["id"]),
                     )
+                self.on_project_change(project["id"])
             except Exception as error:
                 message = f"Portrait generation failed for {character['name']}"
                 with self.database.connect() as connection:
@@ -516,6 +523,7 @@ class GeminiPipelineExecutor:
                            WHERE id = ? AND project_id = ?""",
                         (message, character["id"], project["id"]),
                     )
+                self.on_project_change(project["id"])
                 raise PipelineExecutionError(message) from error
         return {}
 
@@ -576,7 +584,7 @@ class GeminiPipelineExecutor:
                 )
             )
 
-        self._mark_illustration_generating(chapter["id"])
+        self._mark_illustration_generating(chapter["id"], project["id"])
         try:
             prompt = self._illustration_prompt(
                 chapter["prompt"], project.get("style")
@@ -592,6 +600,7 @@ class GeminiPipelineExecutor:
                        WHERE id = ? AND project_id = ?""",
                     (relative_path, chapter["id"], project["id"]),
                 )
+            self.on_project_change(project["id"])
         except Exception as error:
             message = f"Illustration generation failed for {chapter['name']}"
             with self.database.connect() as connection:
@@ -600,6 +609,7 @@ class GeminiPipelineExecutor:
                        WHERE id = ? AND project_id = ?""",
                     (message, chapter["id"], project["id"]),
                 )
+            self.on_project_change(project["id"])
             raise PipelineExecutionError(message) from error
         return {}
 
@@ -613,7 +623,7 @@ class GeminiPipelineExecutor:
             return False
         return path.is_file()
 
-    def _mark_portrait_generating(self, character_id: str) -> None:
+    def _mark_portrait_generating(self, character_id: str, project_id: str) -> None:
         with self.database.connect() as connection:
             connection.execute(
                 """UPDATE characters
@@ -621,6 +631,7 @@ class GeminiPipelineExecutor:
                    WHERE id = ?""",
                 (character_id,),
             )
+        self.on_project_change(project_id)
 
     def _save_portrait(
         self, project_id: str, character_id: str, image: GeneratedImage
@@ -652,7 +663,7 @@ class GeminiPipelineExecutor:
             temporary.unlink(missing_ok=True)
         return relative_path.as_posix()
 
-    def _mark_illustration_generating(self, chapter_id: str) -> None:
+    def _mark_illustration_generating(self, chapter_id: str, project_id: str) -> None:
         with self.database.connect() as connection:
             connection.execute(
                 """UPDATE chapters
@@ -660,6 +671,7 @@ class GeminiPipelineExecutor:
                    WHERE id = ?""",
                 (chapter_id,),
             )
+        self.on_project_change(project_id)
 
     def _save_illustration(
         self, project_id: str, chapter_id: str, image: GeneratedImage

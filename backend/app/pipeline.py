@@ -6,6 +6,7 @@ from typing import Any, Protocol
 from uuid import uuid4
 
 from .database import Database
+from .events import ProjectChangeNotifier, ignore_project_change
 
 
 class PipelineStep(StrEnum):
@@ -175,11 +176,16 @@ def attempt_dict(row: Mapping[str, Any]) -> dict[str, Any]:
 
 class PipelineStateMachine:
     def __init__(
-        self, database: Database, executor: PipelineExecutor, process_instance_id: str
+        self,
+        database: Database,
+        executor: PipelineExecutor,
+        process_instance_id: str,
+        on_project_change: ProjectChangeNotifier = ignore_project_change,
     ):
         self.database = database
         self.executor = executor
         self.process_instance_id = process_instance_id
+        self.on_project_change = on_project_change
 
     def execute(
         self,
@@ -234,6 +240,7 @@ class PipelineStateMachine:
 
         if not claimed:
             self._raise_claim_failure(project_id, user_id, requested_step)
+        self.on_project_change(project_id)
 
         running_project = dict(self._get_project_row(project_id, user_id))
         running_project["requested_style"] = requested_style
@@ -265,6 +272,7 @@ class PipelineStateMachine:
                            WHERE id = ? AND project_id = ? AND outcome = 'RUNNING'""",
                         (failed_at, safe_error, attempt_id, project_id),
                     )
+            self.on_project_change(project_id)
             failed_project = self._get_project(project_id, user_id)
             raise StepExecutionFailed(safe_error, failed_project) from error
 
@@ -393,6 +401,7 @@ class PipelineStateMachine:
                        WHERE id = ? AND project_id = ? AND outcome = 'RUNNING'""",
                     (completed_at, attempt_id, project_id),
                 )
+        self.on_project_change(project_id)
         return self._get_project(project_id, user_id)
 
     def recover(self, project_id: str, user_id: str) -> dict[str, Any]:
@@ -448,6 +457,7 @@ class PipelineStateMachine:
                        WHERE project_id = ? AND image_state = 'GENERATING'""",
                     (project_id,),
                 )
+            self.on_project_change(project_id)
             return self._get_project(project_id, user_id)
 
         project = self._get_project_row(project_id, user_id)

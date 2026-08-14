@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { App } from "./App";
@@ -383,7 +383,7 @@ describe("App", () => {
     expect(screen.getByRole("button", { name: /recover style/i })).toBeInTheDocument();
   });
 
-  it("refreshes project detail after successful recovery", async () => {
+  it("applies the project state returned by successful recovery", async () => {
     const interrupted = {
       ...project,
       step_state: "RUNNING",
@@ -396,13 +396,10 @@ describe("App", () => {
       active_step: "STYLE",
       step_error: "Pipeline execution was interrupted by a backend restart",
     };
-    let didRecover = false;
     await openProject(interrupted, (path, init) => {
       if (path.endsWith("/recover") && init.method === "POST") {
-        didRecover = true;
         return response(recovered);
       }
-      if (didRecover && path.endsWith(project.id)) return response(recovered);
       return undefined as never;
     });
 
@@ -482,69 +479,6 @@ describe("App", () => {
     expect(screen.queryByRole("button", {
       name: /generate (style|characters|portraits|chapters|illustrations)/i,
     })).not.toBeInTheDocument();
-  });
-
-  it("polls project detail while backend state is RUNNING", async () => {
-    let poll: (() => void) | undefined;
-    const nativeSetInterval = window.setInterval.bind(window);
-    vi.spyOn(window, "setInterval").mockImplementation((callback, delay, ...args) => {
-      if (delay === 2000) {
-        poll = callback as () => void;
-        return 42;
-      }
-      return nativeSetInterval(callback, delay, ...args);
-    });
-    const running = { ...project, step_state: "RUNNING", active_step: "CHAPTERS" };
-    const fetchMock = await openProject(running);
-    await waitFor(() => expect(poll).toBeDefined());
-    const detailCallsBefore = fetchMock.mock.calls.filter(([url]) => String(url).endsWith(project.id)).length;
-
-    await act(async () => {
-      poll?.();
-    });
-
-    await waitFor(() => {
-      const detailCallsAfter = fetchMock.mock.calls.filter(([url]) => String(url).endsWith(project.id)).length;
-      expect(detailCallsAfter).toBeGreaterThan(detailCallsBefore);
-    });
-  });
-
-  it.each(["IDLE", "FAILED"])("stops polling once project state becomes %s", async (settledState) => {
-    let poll: (() => void) | undefined;
-    let pollId = 83;
-    const nativeSetInterval = window.setInterval.bind(window);
-    const clearIntervalSpy = vi.spyOn(window, "clearInterval");
-    vi.spyOn(window, "setInterval").mockImplementation((callback, delay, ...args) => {
-      if (delay === 2000) {
-        poll = callback as () => void;
-        pollId += 1;
-        return pollId;
-      }
-      return nativeSetInterval(callback, delay, ...args);
-    });
-    let detailCalls = 0;
-    const running = { ...project, step_state: "RUNNING", active_step: "CHAPTERS" };
-    const settled = {
-      ...running,
-      step_state: settledState,
-      step_error: settledState === "FAILED" ? "Chapter generation failed" : null,
-    };
-    await openProject(running, (path) => {
-      if (path.endsWith(project.id)) {
-        detailCalls += 1;
-        return response(detailCalls === 1 ? running : settled);
-      }
-      return undefined as never;
-    });
-    await waitFor(() => expect(poll).toBeDefined());
-    const currentPollId = pollId;
-
-    await act(async () => {
-      poll?.();
-    });
-
-    await waitFor(() => expect(detailCalls).toBe(2));
-    await waitFor(() => expect(clearIntervalSpy).toHaveBeenCalledWith(currentPollId));
   });
 
   it("offers explicit narration generation only after the required pipeline is done", async () => {

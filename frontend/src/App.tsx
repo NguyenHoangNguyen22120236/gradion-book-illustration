@@ -1,6 +1,11 @@
 import { ChangeEvent, FormEvent, useCallback, useEffect, useState } from "react";
 
-import { api, authenticatedImage, authenticatedMedia } from "./api";
+import {
+  api,
+  authenticatedImage,
+  authenticatedMedia,
+  openProjectStateStream,
+} from "./api";
 import type {
   Character,
   Chapter,
@@ -16,7 +21,6 @@ import type {
 import "./styles.css";
 
 const SESSION_KEY = "gradionSession";
-const POLL_INTERVAL_MS = 2000;
 const IDLE_NARRATION: Narration = {
   state: "IDLE",
   started_at: null,
@@ -89,17 +93,18 @@ export function App() {
     return () => window.removeEventListener("hashchange", updateRoute);
   }, []);
 
-  const loadProject = useCallback(
-    async (projectId: string) => {
-      const detail = await api<Project>(`/projects/${projectId}`, {}, token);
-      setSelectedProject(detail);
-      setProjects((current) =>
-        current.map((item) => (item.id === detail.id ? { ...item, ...detail } : item)),
-      );
-      return detail;
-    },
-    [token],
-  );
+  const applyProjectState = useCallback((detail: Project) => {
+    setSelectedProject(detail);
+    setProjects((current) =>
+      current.map((item) => (item.id === detail.id ? { ...item, ...detail } : item)),
+    );
+  }, []);
+
+  const loadProject = useCallback(async (projectId: string) => {
+    const detail = await api<Project>(`/projects/${projectId}`, {}, token);
+    applyProjectState(detail);
+    return detail;
+  }, [applyProjectState, token]);
 
   useEffect(() => {
     if (!token || user) return;
@@ -191,6 +196,7 @@ export function App() {
             project={selectedProject}
             token={token}
             loadProject={loadProject}
+            onProjectState={applyProjectState}
           />
         ) : (
           <LoadingPage label="Loading project…" inline />
@@ -429,47 +435,40 @@ function NewProject({ token, onCancel, onCreated }: { token: string; onCancel: (
   );
 }
 
-function ProjectDetail({ project, token, loadProject }: { project: Project; token: string; loadProject: (projectId: string) => Promise<Project> }) {
+function ProjectDetail({ project, token, loadProject, onProjectState }: { project: Project; token: string; loadProject: (projectId: string) => Promise<Project>; onProjectState: (project: Project) => void }) {
   const [style, setStyle] = useState("");
   const [mutating, setMutating] = useState(false);
   const [actionError, setActionError] = useState("");
   const refresh = useCallback(() => loadProject(project.id), [loadProject, project.id]);
 
-  useEffect(() => {
-    if (project.step_state !== "RUNNING" && project.narration?.state !== "RUNNING" && !mutating) return;
-    let cancelled = false;
-    const poll = async () => {
-      try {
-        await refresh();
-        if (!cancelled) setActionError("");
-      } catch (reason) {
-        if (!cancelled) setActionError((reason as Error).message);
-      }
-    };
-    const interval = window.setInterval(() => void poll(), POLL_INTERVAL_MS);
-    return () => {
-      cancelled = true;
-      window.clearInterval(interval);
-    };
-  }, [mutating, project.narration?.state, project.step_state, refresh]);
+  useEffect(() => openProjectStateStream(project.id, token, {
+    onProjectState,
+    onDisconnect: () => {
+      void refresh()
+        .then(() => setActionError(""))
+        .catch((reason: Error) => setActionError(reason.message));
+    },
+  }), [onProjectState, project.id, refresh, token]);
+
+  const applyCommandState = (updated: Project) => {
+    onProjectState({
+      ...updated,
+      book_text: updated.book_text ?? project.book_text,
+    });
+  };
 
   const runStep = async (step: PipelineStep) => {
     setMutating(true);
     setActionError("");
     try {
-      await api<Project>(`/projects/${project.id}/steps/${step.toLowerCase()}`, {
+      const updated = await api<Project>(`/projects/${project.id}/steps/${step.toLowerCase()}`, {
         method: "POST",
         ...(step === "STYLE" ? { body: JSON.stringify({ style: style.trim() || null }) } : {}),
       }, token);
+      applyCommandState(updated);
     } catch (reason) {
       setActionError((reason as Error).message);
     } finally {
-      try {
-        await refresh();
-        setActionError("");
-      } catch (reason) {
-        setActionError((reason as Error).message);
-      }
       setMutating(false);
     }
   };
@@ -478,9 +477,8 @@ function ProjectDetail({ project, token, loadProject }: { project: Project; toke
     setMutating(true);
     setActionError("");
     try {
-      await api<Project>(`/projects/${project.id}/recover`, { method: "POST" }, token);
-      await refresh();
-      setActionError("");
+      const updated = await api<Project>(`/projects/${project.id}/recover`, { method: "POST" }, token);
+      applyCommandState(updated);
     } catch (reason) {
       setActionError((reason as Error).message);
     } finally {
@@ -492,15 +490,11 @@ function ProjectDetail({ project, token, loadProject }: { project: Project; toke
     setMutating(true);
     setActionError("");
     try {
-      await api<Project>(`/projects/${project.id}/narration`, { method: "POST" }, token);
+      const updated = await api<Project>(`/projects/${project.id}/narration`, { method: "POST" }, token);
+      applyCommandState(updated);
     } catch (reason) {
       setActionError((reason as Error).message);
     } finally {
-      try {
-        await refresh();
-      } catch (reason) {
-        setActionError((reason as Error).message);
-      }
       setMutating(false);
     }
   };
@@ -509,8 +503,8 @@ function ProjectDetail({ project, token, loadProject }: { project: Project; toke
     setMutating(true);
     setActionError("");
     try {
-      await api<Project>(`/projects/${project.id}/narration/recover`, { method: "POST" }, token);
-      await refresh();
+      const updated = await api<Project>(`/projects/${project.id}/narration/recover`, { method: "POST" }, token);
+      applyCommandState(updated);
     } catch (reason) {
       setActionError((reason as Error).message);
     } finally {

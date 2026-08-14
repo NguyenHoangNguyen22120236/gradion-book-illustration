@@ -5,6 +5,7 @@ from typing import Any, Protocol
 import wave
 
 from .database import Database
+from .events import ProjectChangeNotifier, ignore_project_change
 from .pipeline import InvalidTransition, ProjectNotFound
 
 
@@ -87,11 +88,13 @@ class NarrationStateMachine:
         client: NarrationClient,
         data_dir: Path,
         process_instance_id: str,
+        on_project_change: ProjectChangeNotifier = ignore_project_change,
     ) -> None:
         self.database = database
         self.client = client
         self.data_dir = data_dir
         self.process_instance_id = process_instance_id
+        self.on_project_change = on_project_change
 
     def execute(self, project_id: str, user_id: str) -> dict[str, Any]:
         started_at = datetime.now(UTC).isoformat()
@@ -121,6 +124,7 @@ class NarrationStateMachine:
 
         if not claimed:
             self._raise_claim_failure(project_id, user_id)
+        self.on_project_change(project_id)
 
         try:
             transcript = self._get_or_create_transcript(project_id, project)
@@ -140,6 +144,7 @@ class NarrationStateMachine:
                 )
             if completion.rowcount != 1:
                 raise NarrationProviderError("Could not persist completed narration")
+            self.on_project_change(project_id)
         except Exception as error:
             safe_error = (
                 str(error)
@@ -154,6 +159,7 @@ class NarrationStateMachine:
                          AND execution_owner = ?""",
                     (safe_error[:500], project_id, self.process_instance_id),
                 )
+            self.on_project_change(project_id)
             raise NarrationExecutionFailed(
                 safe_error[:500], self.project_state(project_id, user_id)
             ) from error
@@ -180,6 +186,7 @@ class NarrationStateMachine:
                 "SELECT * FROM narrations WHERE project_id = ?", (project_id,)
             ).fetchone()
         if recovered:
+            self.on_project_change(project_id)
             return self.project_state(project_id, user_id)
         if row is not None and row["state"] == "RUNNING":
             raise InvalidTransition(

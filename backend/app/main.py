@@ -1,3 +1,4 @@
+import json
 import re
 import secrets
 import sqlite3
@@ -7,11 +8,12 @@ from pathlib import Path
 from typing import Annotated
 from uuid import uuid4
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Response, status
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response, status
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, field_validator, model_validator
 
 from .database import Database
+from .events import ProjectEventBroker
 from .gemini import (
     GeminiClient,
     GeminiPipelineExecutor,
@@ -175,28 +177,41 @@ def create_app(
     resolved_data = Path(data_dir) if data_dir else root / "data"
     database = Database(Path(database_path) if database_path else resolved_data / "app.db")
     backend_process_id = process_instance_id or str(uuid4())
+    project_events = ProjectEventBroker()
     resolved_gemini_client: GeminiClient | None = gemini_client
     if pipeline_executor is not None:
         resolved_executor = pipeline_executor
     elif gemini_client is not None:
-        resolved_executor = GeminiPipelineExecutor(gemini_client, database, resolved_data)
+        resolved_executor = GeminiPipelineExecutor(
+            gemini_client,
+            database,
+            resolved_data,
+            on_project_change=project_events.publish,
+        )
     else:
         gemini_settings = GeminiSettings.from_environment()
         if gemini_settings:
             resolved_gemini_client = GoogleGenAIClient(settings=gemini_settings)
             resolved_executor = GeminiPipelineExecutor(
-                resolved_gemini_client, database, resolved_data
+                resolved_gemini_client,
+                database,
+                resolved_data,
+                on_project_change=project_events.publish,
             )
         else:
             resolved_executor = UnconfiguredPipelineExecutor()
     state_machine = PipelineStateMachine(
-        database, resolved_executor, backend_process_id
+        database,
+        resolved_executor,
+        backend_process_id,
+        on_project_change=project_events.publish,
     )
     narration_state_machine = NarrationStateMachine(
         database,
         resolved_gemini_client or UnconfiguredNarrationClient(),
         resolved_data,
         backend_process_id,
+        on_project_change=project_events.publish,
     )
 
     @asynccontextmanager
@@ -212,6 +227,7 @@ def create_app(
     application.state.database = database
     application.state.data_dir = resolved_data
     application.state.process_instance_id = backend_process_id
+    application.state.project_events = project_events
 
     def current_user(authorization: Annotated[str | None, Header()] = None) -> sqlite3.Row:
         if not authorization or not authorization.startswith("Bearer "):
@@ -312,6 +328,24 @@ def create_app(
             ).fetchall()
         return [attempt_dict(row) for row in rows]
 
+    def read_project_detail(project_id: str, user_id: str) -> dict:
+        with database.connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM projects WHERE id = ? AND user_id = ?",
+                (project_id, user_id),
+            ).fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="Project not found")
+        return project_dict(
+            row,
+            backend_process_id,
+            read_book(row),
+            read_characters(project_id),
+            read_chapters(project_id),
+            read_attempts(project_id),
+            read_narration(database, project_id, backend_process_id),
+        )
+
     @application.post("/api/projects", status_code=status.HTTP_201_CREATED)
     def create_project(
         payload: ProjectRequest,
@@ -382,21 +416,47 @@ def create_app(
         project_id: str,
         user: Annotated[sqlite3.Row, Depends(current_user)],
     ) -> dict:
-        with database.connect() as connection:
-            row = connection.execute(
-                "SELECT * FROM projects WHERE id = ? AND user_id = ?",
-                (project_id, user["id"]),
-            ).fetchone()
-        if row is None:
-            raise HTTPException(status_code=404, detail="Project not found")
-        return project_dict(
-            row,
-            backend_process_id,
-            read_book(row),
-            read_characters(project_id),
-            read_chapters(project_id),
-            read_attempts(project_id),
-            read_narration(database, project_id, backend_process_id),
+        return read_project_detail(project_id, user["id"])
+
+    @application.get("/api/projects/{project_id}/events", response_model=None)
+    async def stream_project_events(
+        project_id: str,
+        request: Request,
+        user: Annotated[sqlite3.Row, Depends(current_user)],
+    ) -> StreamingResponse:
+        # Fail authentication/ownership before establishing a long-lived response.
+        read_project_detail(project_id, user["id"])
+
+        async def event_stream():
+            subscription = project_events.subscribe(project_id)
+            try:
+                snapshot = read_project_detail(project_id, user["id"])
+                yield (
+                    "event: project-state\n"
+                    f"data: {json.dumps(snapshot, ensure_ascii=False, separators=(',', ':'))}\n\n"
+                )
+                while not await request.is_disconnected():
+                    changed = await subscription.wait(timeout_seconds=15.0)
+                    if await request.is_disconnected():
+                        break
+                    if not changed:
+                        yield ": heartbeat\n\n"
+                        continue
+                    snapshot = read_project_detail(project_id, user["id"])
+                    yield (
+                        "event: project-state\n"
+                        f"data: {json.dumps(snapshot, ensure_ascii=False, separators=(',', ':'))}\n\n"
+                    )
+            finally:
+                subscription.close()
+
+        return StreamingResponse(
+            event_stream(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache, no-transform",
+                "X-Accel-Buffering": "no",
+            },
         )
 
     @application.get(

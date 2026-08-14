@@ -77,7 +77,7 @@ GitHub Actions also runs this test harness and the frontend production build on 
 
 ## Architecture and pipeline
 
-The React frontend calls the FastAPI API and polls project detail while a step is running. The backend is authoritative for identity, ownership, step order, progress, failures, and recovery.
+The React frontend calls the FastAPI API and follows project progress through an authenticated SSE fetch stream. Each event contains a complete project snapshot read from SQLite; the normal project-detail endpoint remains the initial-load and one-shot fallback refresh path. The backend is authoritative for identity, ownership, step order, progress, failures, and recovery.
 
 The user-triggered pipeline is:
 
