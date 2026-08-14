@@ -7,7 +7,7 @@
 Backend tests cover:
 
 - health, lightweight session creation/restoration/sign-out, email normalization, validation, and project ownership;
-- project creation from pasted text and `.txt` filenames, full book-file persistence, and restart-safe user/project data;
+- project creation from pasted text, `.txt` filenames, and the three bundled sample-book IDs, including exact catalogue metadata, source exclusivity, safe invalid-ID rejection, full project-specific book-file persistence, ownership, local-only creation, and restart-safe user/project data;
 - initial state, strict five-step ordering, legal state transitions, invalid/repeated actions, failed-step retry, and preservation of completed results;
 - atomic SQLite step claims under concurrent requests, rejection of duplicates, and the rule that an old timestamp alone does not make same-process work recoverable;
 - process-owner restart recovery, ownership of recovery actions, and preservation of already-ready portrait items;
@@ -21,7 +21,7 @@ Frontend component tests cover:
 
 - identity validation and the empty project-list state;
 - project status and five-step progress rendering;
-- creating projects from pasted text and a `.txt` file;
+- rendering the bundled sample catalogue and creating projects from a selected sample ID, pasted text, or a `.txt` file without mixing sources;
 - showing only the next legal action;
 - named running state, persisted failure and retry, backend-authorized recovery, and post-recovery refresh;
 - generated character prompts, all portrait item states, chapter/final-illustration rendering, and authenticated image loading;
@@ -65,27 +65,31 @@ rootdir: C:\GitHub\gradion-book-illustration\backend
 configfile: pytest.ini
 testpaths: tests
 plugins: anyio-4.14.2
-collected 48 items
+collected 53 items
 
-tests\test_chapters_illustrations.py .........                           [ 18%]
-tests\test_gemini_pipeline.py ..........                                 [ 39%]
-tests\test_health.py .                                                   [ 41%]
-tests\test_pipeline.py ...........                                       [ 64%]
-tests\test_portraits.py .........                                        [ 83%]
-tests\test_projects.py ....                                              [ 91%]
+tests\test_chapters_illustrations.py .........                           [ 16%]
+tests\test_gemini_pipeline.py ..........                                 [ 35%]
+tests\test_health.py .                                                   [ 37%]
+tests\test_pipeline.py ...........                                       [ 58%]
+tests\test_portraits.py .........                                        [ 75%]
+tests\test_projects.py .........                                         [ 92%]
 tests\test_session.py ....                                               [100%]
 
-============================= 48 passed in 11.59s =============================
+============================= 53 passed in 6.45s ==============================
 
 > gradion-book-illustration-frontend@0.1.0 test
 > vitest run
 
  RUN  v3.2.7 C:/GitHub/gradion-book-illustration/frontend
 
- ✓ src/App.test.tsx (16 tests) 1919ms
+ ✓ src/App.test.tsx (19 tests) 1312ms
 
  Test Files  1 passed (1)
-      Tests  16 passed (16)
-   Start at  10:25:45
-   Duration  5.15s (transform 277ms, setup 248ms, collect 574ms, tests 1.92s, environment 1.57s, prepare 394ms)
+      Tests  19 passed (19)
+   Start at  12:54:35
+   Duration  3.83s (transform 206ms, setup 170ms, collect 477ms, tests 1.31s, environment 1.09s, prepare 282ms)
 ```
+
+The requested frontend production check also completed successfully on
+2026-08-14: `npm run build` ran `tsc -b && vite build`, transformed 30 modules,
+and completed the Vite build in 1.45 seconds.

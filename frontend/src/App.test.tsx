@@ -29,6 +29,24 @@ const project = {
   book_text: "Once beside the river, Mole opened the door to spring.",
 };
 
+const sampleBooks = [
+  {
+    id: "alice-in-wonderland",
+    title: "Alice’s Adventures in Wonderland",
+    author: "Lewis Carroll",
+  },
+  {
+    id: "wizard-of-oz",
+    title: "The Wonderful Wizard of Oz",
+    author: "L. Frank Baum",
+  },
+  {
+    id: "wind-in-the-willows",
+    title: "The Wind in the Willows",
+    author: "Kenneth Grahame",
+  },
+];
+
 const response = (body: unknown, status = 200) =>
   Promise.resolve(
     new Response(status === 204 ? null : JSON.stringify(body), {
@@ -55,6 +73,7 @@ function mockApi({
       if (handled) return handled;
     }
     if (path === "/api/session") return response(user);
+    if (path === "/api/sample-books") return response(sampleBooks);
     if (path === "/api/projects") return response(projects);
     if (path === `/api/projects/${project.id}`) return response(detail);
     throw new Error(`Unexpected request: ${init.method ?? "GET"} ${path}`);
@@ -124,6 +143,72 @@ describe("App", () => {
     expect(card.querySelectorAll('[data-complete="true"]')).toHaveLength(3);
   });
 
+  it("shows the bundled sample-book catalogue on the New Project screen", async () => {
+    mockApi();
+    render(<App />);
+    await screen.findByRole("heading", { name: /no projects yet/i });
+
+    fireEvent.click(screen.getByRole("button", { name: /new project/i }));
+
+    expect(await screen.findByText("Alice’s Adventures in Wonderland")).toBeInTheDocument();
+    expect(screen.getByText("Lewis Carroll")).toBeInTheDocument();
+    expect(screen.getByText("The Wonderful Wizard of Oz")).toBeInTheDocument();
+    expect(screen.getByText("L. Frank Baum")).toBeInTheDocument();
+    expect(screen.getByText("The Wind in the Willows")).toBeInTheDocument();
+    expect(screen.getByText("Kenneth Grahame")).toBeInTheDocument();
+  });
+
+  it("creates a project with the selected sample ID and opens persisted detail", async () => {
+    const created = {
+      ...project,
+      title: "My Oz Project",
+      book_text: "The Project Gutenberg eBook of The Wonderful Wizard of Oz",
+    };
+    let wasCreated = false;
+    mockApi({
+      handler: (path, init) => {
+        if (path === "/api/projects" && init.method === "POST") {
+          wasCreated = true;
+          const body = JSON.parse(String(init.body));
+          expect(body).toEqual({
+            title: "My Oz Project",
+            sample_book_id: "wizard-of-oz",
+          });
+          return response(created, 201);
+        }
+        if (wasCreated && path === `/api/projects/${project.id}`) return response(created);
+        return undefined as never;
+      },
+    });
+    render(<App />);
+    await screen.findByRole("heading", { name: /no projects yet/i });
+    fireEvent.click(screen.getByRole("button", { name: /new project/i }));
+    await screen.findByText("The Wonderful Wizard of Oz");
+
+    fireEvent.change(screen.getByLabelText(/project title/i), {
+      target: { value: "My Oz Project" },
+    });
+    fireEvent.click(screen.getByRole("radio", { name: /wonderful wizard of oz/i }));
+    fireEvent.click(screen.getByRole("button", { name: /^create project/i }));
+
+    expect(await screen.findByRole("heading", { name: "My Oz Project" })).toBeInTheDocument();
+    expect(screen.getByText(/project gutenberg ebook of the wonderful wizard of oz/i)).toBeInTheDocument();
+  });
+
+  it("prevents custom text and upload from conflicting with a selected sample", async () => {
+    mockApi();
+    render(<App />);
+    await screen.findByRole("heading", { name: /no projects yet/i });
+    fireEvent.click(screen.getByRole("button", { name: /new project/i }));
+    await screen.findByText("Alice’s Adventures in Wonderland");
+
+    fireEvent.click(screen.getByRole("radio", { name: /alice.*wonderland/i }));
+
+    expect(screen.getByLabelText(/choose a \.txt file/i)).toBeDisabled();
+    expect(screen.getByLabelText(/book text/i)).toBeDisabled();
+    expect(screen.getByRole("button", { name: /clear sample selection/i })).toBeInTheDocument();
+  });
+
   it("creates a pasted-text project locally and then opens fresh backend detail", async () => {
     const created = { ...project, title: "New River Story", book_text: "A new story beside the river." };
     let wasCreated = false;
@@ -135,6 +220,7 @@ describe("App", () => {
             title: "New River Story",
             book_text: "A new story beside the river.",
           });
+          expect(JSON.parse(String(init.body))).not.toHaveProperty("sample_book_id");
           return response(created, 201);
         }
         if (wasCreated && path === `/api/projects/${project.id}`) return response(created);
@@ -170,6 +256,7 @@ describe("App", () => {
             book_text: "Text loaded from the selected file.",
             source_filename: "river.txt",
           });
+          expect(JSON.parse(String(init.body))).not.toHaveProperty("sample_book_id");
           return response(created, 201);
         }
         if (wasCreated && path === `/api/projects/${project.id}`) return response(created);

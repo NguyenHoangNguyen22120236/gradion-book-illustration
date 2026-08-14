@@ -48,6 +48,22 @@ Start the backend and frontend together:
 
 Project creation works without Gemini, but all five generation steps require a valid `GEMINI_API_KEY`.
 
+On the New Project screen, choose one bundled public-domain sample book, upload a
+`.txt` file, or paste book text. Sample selection stays local during project
+creation and follows the same five user-triggered pipeline steps as every other
+project.
+
+The bundled samples are reviewed Project Gutenberg plain-text editions:
+
+- [Alice's Adventures in Wonderland, eBook #11](https://www.gutenberg.org/ebooks/11) by Lewis Carroll;
+- [The Wonderful Wizard of Oz, eBook #55](https://www.gutenberg.org/ebooks/55) by L. Frank Baum;
+- [The Wind in the Willows, eBook #289](https://www.gutenberg.org/ebooks/289) by Kenneth Grahame.
+
+Each source page identifies its edition as public domain in the USA. The
+committed text distributions retain Project Gutenberg's title, author, eBook
+number, credits, and license information; users outside the USA should check
+their local copyright laws.
+
 ## Test
 
 Run both automated suites with one command:

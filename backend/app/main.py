@@ -9,7 +9,7 @@ from uuid import uuid4
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Response, status
 from fastapi.responses import FileResponse, JSONResponse
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, field_validator, model_validator
 
 from .database import Database
 from .gemini import (
@@ -30,6 +30,7 @@ from .pipeline import (
     chapter_dict,
     character_dict,
 )
+from .sample_books import SAMPLE_BOOKS, read_sample_book
 
 
 EMAIL_PATTERN = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
@@ -62,8 +63,9 @@ class SessionRequest(BaseModel):
 
 class ProjectRequest(BaseModel):
     title: str
-    book_text: str
+    book_text: str | None = None
     source_filename: str | None = None
+    sample_book_id: str | None = None
 
     @field_validator("title")
     @classmethod
@@ -75,8 +77,8 @@ class ProjectRequest(BaseModel):
 
     @field_validator("book_text")
     @classmethod
-    def validate_book_text(cls, value: str) -> str:
-        if not value.strip():
+    def validate_book_text(cls, value: str | None) -> str | None:
+        if value is not None and not value.strip():
             raise ValueError("Book text is required")
         return value
 
@@ -86,6 +88,17 @@ class ProjectRequest(BaseModel):
         if value is not None and Path(value).suffix.lower() != ".txt":
             raise ValueError("Uploaded book must be a .txt file")
         return value
+
+    @model_validator(mode="after")
+    def validate_book_source(self) -> "ProjectRequest":
+        source_count = int(self.book_text is not None) + int(
+            self.sample_book_id is not None
+        )
+        if source_count != 1:
+            raise ValueError("Provide exactly one book source")
+        if self.source_filename is not None and self.book_text is None:
+            raise ValueError("A source filename requires book text")
+        return self
 
 
 class StyleStepRequest(BaseModel):
@@ -193,6 +206,13 @@ def create_app(
     def health() -> dict[str, str]:
         return {"status": "ok"}
 
+    @application.get("/api/sample-books")
+    def list_sample_books(
+        user: Annotated[sqlite3.Row, Depends(current_user)],
+    ) -> list[dict[str, str]]:
+        del user
+        return [sample.public_dict() for sample in SAMPLE_BOOKS]
+
     @application.post("/api/session")
     def sign_in(payload: SessionRequest) -> dict:
         timestamp = now_iso()
@@ -261,6 +281,19 @@ def create_app(
         payload: ProjectRequest,
         user: Annotated[sqlite3.Row, Depends(current_user)],
     ) -> dict:
+        if payload.sample_book_id is not None:
+            try:
+                book_text = read_sample_book(payload.sample_book_id)
+            except ValueError as error:
+                raise HTTPException(status_code=422, detail=str(error)) from error
+            except OSError as error:
+                raise HTTPException(
+                    status_code=500, detail="Bundled sample book is unavailable"
+                ) from error
+        else:
+            book_text = payload.book_text
+        if book_text is None:
+            raise HTTPException(status_code=422, detail="Book text is required")
         project_id = str(uuid4())
         timestamp = now_iso()
         relative_book_path = Path("books") / f"{project_id}.txt"
@@ -280,13 +313,13 @@ def create_app(
                         timestamp,
                     ),
                 )
-                absolute_book_path.write_text(payload.book_text, encoding="utf-8")
+                absolute_book_path.write_text(book_text, encoding="utf-8")
                 row = connection.execute(
                     "SELECT * FROM projects WHERE id = ?", (project_id,)
                 ).fetchone()
         except OSError as error:
             raise HTTPException(status_code=500, detail="Could not save book text") from error
-        return project_dict(row, backend_process_id, payload.book_text, [])
+        return project_dict(row, backend_process_id, book_text, [])
 
     @application.get("/api/projects")
     def list_projects(

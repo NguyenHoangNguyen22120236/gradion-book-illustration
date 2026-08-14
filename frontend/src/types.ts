@@ -23,6 +23,12 @@ export type User = {
   created_at: string;
 };
 
+export type SampleBook = {
+  id: string;
+  title: string;
+  author: string;
+};
+
 export type Character = {
   id: string;
   name: string;
