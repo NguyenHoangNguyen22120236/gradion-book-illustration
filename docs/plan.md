@@ -755,6 +755,8 @@ Implement optional bonuses in this order, from lowest risk to highest risk:
 
 #### Bonus 1 — CI pipeline
 
+Status: Complete (2026-08-14).
+
 Goal:
 Run the existing backend and frontend tests automatically on every push and
 pull request.
@@ -784,6 +786,8 @@ Tasks:
 - keep project creation local-only and do not call Gemini automatically.
 
 #### Bonus 3 — Retry and attempt history
+
+Status: Complete (2026-08-14).
 
 Goal:
 Make prior execution attempts visible for each pipeline step without changing

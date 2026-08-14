@@ -15,6 +15,17 @@ export type PipelineStep =
 
 export type StepState = "IDLE" | "RUNNING" | "FAILED";
 export type ImageState = "PENDING" | "GENERATING" | "READY" | "FAILED";
+export type AttemptOutcome = "RUNNING" | "SUCCEEDED" | "FAILED" | "INTERRUPTED";
+
+export type PipelineAttempt = {
+  id: string;
+  step: PipelineStep;
+  attempt_number: number;
+  started_at: string;
+  ended_at: string | null;
+  outcome: AttemptOutcome;
+  error: string | null;
+};
 
 export type User = {
   id: string;
@@ -61,5 +72,6 @@ export type Project = {
   style: string | null;
   characters: Character[];
   chapters: Chapter[];
+  attempts: PipelineAttempt[];
   book_text?: string;
 };

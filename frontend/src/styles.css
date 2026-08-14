@@ -163,6 +163,19 @@ textarea { resize: vertical; line-height: 1.65; }
 .warning-panel { border-color: #e2b485; background: #fff9f1; }
 .error-panel { border-color: #e8c5c1; background: var(--red-soft); }
 .persisted-error { padding: .85rem 1rem; border-left: 3px solid var(--red); color: var(--red) !important; background: rgba(255,255,255,.62); }
+.attempt-history { padding: 1.15rem 1.25rem; border: 1px solid var(--line); border-radius: 15px; background: rgba(255, 255, 255, .72); }
+.attempt-groups { display: grid; gap: 1rem; margin-top: .8rem; }
+.attempt-group h2 { margin: 0 0 .45rem; font-family: inherit; font-size: .76rem; }
+.attempt-group ol { display: grid; gap: .38rem; margin: 0; padding: 0; list-style: none; }
+.attempt-row { padding: .55rem .65rem; border-left: 3px solid var(--faint); border-radius: 5px; background: var(--paper); }
+.attempt-row > div { display: flex; align-items: baseline; justify-content: space-between; gap: .8rem; }
+.attempt-row strong { font-size: .7rem; }
+.attempt-row span, .attempt-row p { color: var(--muted); font-size: .64rem; line-height: 1.5; }
+.attempt-row p { margin: .35rem 0 0; }
+.attempt-row.succeeded { border-left-color: var(--green); }
+.attempt-row.failed { border-left-color: var(--red); background: var(--red-soft); }
+.attempt-row.running { border-left-color: var(--orange); background: var(--orange-soft); }
+.attempt-row.interrupted { border-left-color: #a36b2c; background: #fff9f1; }
 .success-mark { display: grid; place-items: center; flex: 0 0 38px; height: 38px; border-radius: 50%; color: #fff; background: var(--green); font-weight: 800; }
 .spinner { display: inline-block; flex: 0 0 25px; width: 25px; height: 25px; border: 3px solid #dfd8cf; border-top-color: var(--orange); border-radius: 50%; animation: spin .8s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
@@ -224,6 +237,7 @@ footer i { width: 1px; height: 12px; background: var(--line); }
   .character-grid { grid-template-columns: 1fr; }
   .sample-options { grid-template-columns: 1fr; }
   .running-panel, .complete-panel { align-items: flex-start; }
+  .attempt-row > div { align-items: flex-start; flex-direction: column; gap: .2rem; }
 }
 
 @media (prefers-reduced-motion: reduce) {

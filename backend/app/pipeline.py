@@ -1,6 +1,7 @@
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from enum import StrEnum
+import re
 from typing import Any, Protocol
 from uuid import uuid4
 
@@ -77,6 +78,22 @@ class StepExecutionFailed(Exception):
         self.project = project
 
 
+SENSITIVE_ERROR_PATTERNS = (
+    re.compile(r"(?i)(authorization\s*:\s*bearer\s+)[^\s,;]+"),
+    re.compile(r"(?i)\b(api[_-]?key|access[_-]?token|auth[_-]?token)\s*[:=]\s*[^\s,;]+"),
+)
+
+
+def sanitize_attempt_error(error: Exception) -> str:
+    message = next(
+        (line.strip() for line in str(error).splitlines() if line.strip()),
+        "Pipeline step failed",
+    )
+    for pattern in SENSITIVE_ERROR_PATTERNS:
+        message = pattern.sub(lambda match: f"{match.group(1)}[REDACTED]", message)
+    return message[:500]
+
+
 def can_recover_execution(
     row: Mapping[str, Any], process_instance_id: str
 ) -> bool:
@@ -141,6 +158,21 @@ def chapter_dict(row: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def attempt_dict(row: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        key: row[key]
+        for key in (
+            "id",
+            "step",
+            "attempt_number",
+            "started_at",
+            "ended_at",
+            "outcome",
+            "error",
+        )
+    }
+
+
 class PipelineStateMachine:
     def __init__(
         self, database: Database, executor: PipelineExecutor, process_instance_id: str
@@ -182,6 +214,23 @@ class PipelineStateMachine:
                 ),
             )
             claimed = claim.rowcount == 1
+            attempt_id = str(uuid4())
+            if claimed:
+                connection.execute(
+                    """INSERT INTO pipeline_attempts
+                       (id, project_id, step, attempt_number, started_at, outcome)
+                       SELECT ?, ?, ?, COALESCE(MAX(attempt_number), 0) + 1, ?, 'RUNNING'
+                       FROM pipeline_attempts
+                       WHERE project_id = ? AND step = ?""",
+                    (
+                        attempt_id,
+                        project_id,
+                        requested_step.value,
+                        started_at,
+                        project_id,
+                        requested_step.value,
+                    ),
+                )
 
         if not claimed:
             self._raise_claim_failure(project_id, user_id, requested_step)
@@ -192,15 +241,16 @@ class PipelineStateMachine:
             result = self.executor.execute(requested_step.value, running_project)
         except PipelineExecutionError as error:
             failed_at = datetime.now(UTC).isoformat()
+            safe_error = sanitize_attempt_error(error)
             with self.database.connect() as connection:
-                connection.execute(
+                failure = connection.execute(
                     """UPDATE projects
                        SET step_state = 'FAILED', step_error = ?, execution_owner = NULL,
                            updated_at = ?
                        WHERE id = ? AND user_id = ? AND step_state = 'RUNNING'
                          AND active_step = ? AND execution_owner = ?""",
                     (
-                        str(error),
+                        safe_error,
                         failed_at,
                         project_id,
                         user_id,
@@ -208,15 +258,22 @@ class PipelineStateMachine:
                         self.process_instance_id,
                     ),
                 )
+                if failure.rowcount == 1:
+                    connection.execute(
+                        """UPDATE pipeline_attempts
+                           SET outcome = 'FAILED', ended_at = ?, error = ?
+                           WHERE id = ? AND project_id = ? AND outcome = 'RUNNING'""",
+                        (failed_at, safe_error, attempt_id, project_id),
+                    )
             failed_project = self._get_project(project_id, user_id)
-            raise StepExecutionFailed(str(error), failed_project) from error
+            raise StepExecutionFailed(safe_error, failed_project) from error
 
         completed_at = datetime.now(UTC).isoformat()
         style = result.get("style") if requested_step == PipelineStep.STYLE else None
         interaction_id = result.get("latest_interaction_id")
         with self.database.connect() as connection:
             if requested_step == PipelineStep.STYLE:
-                connection.execute(
+                completion = connection.execute(
                     """UPDATE projects
                        SET completed_stage = ?, step_state = 'IDLE', active_step = NULL,
                            step_started_at = NULL, step_error = NULL,
@@ -255,7 +312,7 @@ class PipelineStateMachine:
                                 sort_order,
                             ),
                         )
-                connection.execute(
+                completion = connection.execute(
                     """UPDATE projects
                        SET completed_stage = ?, step_state = 'IDLE', active_step = NULL,
                            step_started_at = NULL, step_error = NULL,
@@ -293,7 +350,7 @@ class PipelineStateMachine:
                                 sort_order,
                             ),
                         )
-                connection.execute(
+                completion = connection.execute(
                     """UPDATE projects
                        SET completed_stage = ?, step_state = 'IDLE', active_step = NULL,
                            step_started_at = NULL, step_error = NULL,
@@ -313,7 +370,7 @@ class PipelineStateMachine:
                     ),
                 )
             else:
-                connection.execute(
+                completion = connection.execute(
                     """UPDATE projects
                        SET completed_stage = ?, step_state = 'IDLE', active_step = NULL,
                            step_started_at = NULL, step_error = NULL,
@@ -329,11 +386,24 @@ class PipelineStateMachine:
                         self.process_instance_id,
                     ),
                 )
+            if completion.rowcount == 1:
+                connection.execute(
+                    """UPDATE pipeline_attempts
+                       SET outcome = 'SUCCEEDED', ended_at = ?, error = NULL
+                       WHERE id = ? AND project_id = ? AND outcome = 'RUNNING'""",
+                    (completed_at, attempt_id, project_id),
+                )
         return self._get_project(project_id, user_id)
 
     def recover(self, project_id: str, user_id: str) -> dict[str, Any]:
         recovered_at = datetime.now(UTC).isoformat()
         with self.database.connect() as connection:
+            interrupted = connection.execute(
+                """SELECT active_step FROM projects
+                   WHERE id = ? AND user_id = ? AND step_state = 'RUNNING'
+                     AND (execution_owner IS NULL OR execution_owner <> ?)""",
+                (project_id, user_id, self.process_instance_id),
+            ).fetchone()
             recovery = connection.execute(
                 """UPDATE projects
                    SET step_state = 'FAILED',
@@ -349,6 +419,18 @@ class PipelineStateMachine:
                 ),
             )
             recovered = recovery.rowcount == 1
+            if recovered and interrupted is not None:
+                connection.execute(
+                    """UPDATE pipeline_attempts
+                       SET outcome = 'INTERRUPTED', ended_at = ?,
+                           error = 'Pipeline execution was interrupted by a backend restart'
+                       WHERE id = (
+                           SELECT id FROM pipeline_attempts
+                           WHERE project_id = ? AND step = ? AND outcome = 'RUNNING'
+                           ORDER BY attempt_number DESC LIMIT 1
+                       ) AND outcome = 'RUNNING'""",
+                    (recovered_at, project_id, interrupted["active_step"]),
+                )
 
         if recovered:
             with self.database.connect() as connection:
@@ -421,8 +503,16 @@ class PipelineStateMachine:
                    WHERE project_id = ? ORDER BY sort_order""",
                 (project_id,),
             ).fetchall()
+            attempts = connection.execute(
+                """SELECT id, step, attempt_number, started_at, ended_at, outcome, error
+                   FROM pipeline_attempts
+                   WHERE project_id = ?
+                   ORDER BY started_at DESC, attempt_number DESC, id DESC""",
+                (project_id,),
+            ).fetchall()
         project["characters"] = [character_dict(character) for character in characters]
         project["chapters"] = [chapter_dict(chapter) for chapter in chapters]
+        project["attempts"] = [attempt_dict(attempt) for attempt in attempts]
         return project
 
     def _get_project_row(
