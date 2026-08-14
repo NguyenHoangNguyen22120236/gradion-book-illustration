@@ -9,6 +9,11 @@ if [[ -f "$ROOT_DIR/.env" ]]; then
   set +a
 fi
 
+# Git Bash rewrites POSIX-looking environment values before launching Windows
+# executables. Keep Vite's relative API URL (for example, /api) as a URL rather
+# than converting it to C:/Program Files/Git/api.
+export MSYS2_ENV_CONV_EXCL="${MSYS2_ENV_CONV_EXCL:+${MSYS2_ENV_CONV_EXCL};}VITE_API_BASE_URL"
+
 BACKEND_HOST="${BACKEND_HOST:-127.0.0.1}"
 BACKEND_PORT="${BACKEND_PORT:-8000}"
 FRONTEND_HOST="${FRONTEND_HOST:-127.0.0.1}"

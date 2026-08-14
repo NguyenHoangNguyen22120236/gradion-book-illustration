@@ -1,6 +1,17 @@
 import type { Project } from "./types";
 
-const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "/api";
+export function resolveApiBase(configuredBase?: string): string {
+  const value = configuredBase?.trim();
+  if (!value) return "/api";
+
+  // A browser API base must never be a local Windows filesystem path. This can
+  // happen when Git Bash path-converts VITE_API_BASE_URL=/api for npm.exe.
+  if (/^(?:file:\/\/\/|\/?[a-z]:[\\/])/i.test(value)) return "/api";
+
+  return value.replace(/\/$/, "");
+}
+
+const API_BASE = resolveApiBase(import.meta.env.VITE_API_BASE_URL);
 
 export class ApiError extends Error {
   constructor(
