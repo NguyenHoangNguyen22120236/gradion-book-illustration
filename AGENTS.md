@@ -39,7 +39,7 @@ Use:
 - Backend: FastAPI + Python
 - Persistence: SQLite
 - Book text and generated images: local filesystem
-- Frontend progress updates: polling
+- Frontend progress updates: authenticated SSE with REST refresh fallback
 - Gemini: official Python SDK and/or documented REST endpoints as needed
 - Local development only
 
@@ -56,7 +56,7 @@ Do not add:
 - OAuth
 - password authentication
 - automatic Gemini retry loops
-- WebSockets/SSE unless explicitly approved later
+- WebSockets unless explicitly approved later
 
 Keep the solution lean.
 
@@ -329,13 +329,15 @@ Do not copy:
 
 ---
 
-## Polling
+## Real-time progress
 
-Polling is acceptable and preferred for this assessment.
+Project detail uses authenticated Server-Sent Events to receive complete,
+authoritative project snapshots. SQLite remains the source of truth, and SSE
+must never claim or own pipeline execution.
 
-While a step is running, the frontend may poll the project endpoint periodically to display current state and per-item progress.
-
-Do not add WebSockets or SSE unless there is a demonstrated need.
+Keep `GET /api/projects/{project_id}` as the initial-load and one-shot refresh
+fallback. Do not add periodic project polling or WebSockets unless explicitly
+approved later.
 
 ---
 

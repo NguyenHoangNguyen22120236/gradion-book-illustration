@@ -68,7 +68,7 @@ Responsibilities:
 - new project,
 - project detail,
 - five-step progress,
-- polling,
+- authenticated SSE updates with REST refresh fallback,
 - loading/error/retry/interrupted-run UI,
 - image rendering.
 
@@ -452,7 +452,7 @@ Show exactly one primary action for the next legal step.
 
 While running:
 - show the specific active step,
-- poll backend,
+- follow authenticated backend SSE snapshots,
 - show per-item portrait progress.
 
 On failure:
@@ -679,7 +679,7 @@ Tasks:
 - stepper,
 - style UI,
 - character/chapter cards,
-- polling,
+- authenticated SSE progress with REST refresh fallback,
 - running state,
 - failure/retry state,
 - interrupted-run recovery,
@@ -845,6 +845,8 @@ Tasks:
 - mock the provider in automated tests and never auto-retry it.
 
 #### Bonus 6 — Real-time step updates
+
+Status: Complete (2026-08-14).
 
 Goal:
 Replace frontend polling with server-pushed progress only after the polling
